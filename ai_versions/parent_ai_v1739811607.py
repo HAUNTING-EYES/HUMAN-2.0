@@ -1,61 +1,12 @@
-import subprocess
-import time
-import os
-import random
-import psutil
-import requests  # Hugging Face API
-import shutil
-from huggingface_hub import InferenceClient
-from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv()
+        """
+        if "SUCCESS" in output:
+            return True  # Allow more flexibility in performance changes
 
-def get_api_key():
-    """
-    Fetches the Hugging Face API key securely.
-    """
-    api_key = os.getenv("HF_API_KEY")
-    if not api_key:
-        raise ValueError("❌ API key not found. Ensure HF_API_KEY is set in your .env file.")
-    return api_key
+        if execution_time is None or memory_usage is None:
+            return False  # If metrics are missing, reject update
 
-# Test fetching the API key
-if __name__ == "__main__":
-    print("Your Hugging Face API key is:", get_api_key())
-
-
-def run_child():
-    """
-    Runs the child process (a modified version of the AI).
-    """
-    print("🚀 Running child AI process...")
-    try:
-        start_time = time.time()
-        process = subprocess.Popen(['python', 'child_ai.py'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        try:
-            stdout, stderr = process.communicate(timeout=5)  # Prevent infinite hang
-        except subprocess.TimeoutExpired:
-            process.kill()
-            print("⏳ Child process took too long! Terminating.")
-            return "TIMEOUT", None, None
-
-        execution_time = time.time() - start_time
-        return stdout.strip(), execution_time, 0  # Memory tracking simplified
-    except Exception as e:
-        return f"Child process failed: {e}", None, None
-
-def evaluate_child_performance(output, execution_time, memory_usage):
-    """
-    Evaluates whether the child's performance is better.
-    """
-    if "SUCCESS" in output:
-        return True  # Allow more flexibility in performance changes
-
-    if execution_time is None or memory_usage is None:
-        return False  # If metrics are missing, reject update
-
-    return execution_time < 2.5 and memory_usage < 100
+        return execution_time < 2.5 and memory_usage < 100
 
 def improve_code_with_huggingface(code):
     """
@@ -72,8 +23,6 @@ def improve_code_with_huggingface(code):
         - A new feature for learning from past failures
         - Faster and more efficient logic
         - Parallel execution if possible
-         - Make sure the AI is more robust and adaptable
-        - MAke sure the new AI doesnt have any errors
 
         Here is the current AI code:
         {code}
@@ -92,7 +41,6 @@ def improve_code_with_huggingface(code):
     except Exception as e:
         print("❌ AI Code Improvement Failed:", e)
         return code
-
 
 def save_best_ai():
     """
@@ -142,22 +90,4 @@ def generate_child_code():
     with open("child_ai.py", "w", encoding="utf-8") as child_file:
         child_file.write(modified_code)
     
-    print("✅ Child AI code generated successfully!")
-
-if __name__ == "__main__":
-    print("Parent AI running... Looping automatically...")
-    while True:
-        print("\n🔹 Generating new child AI code...")
-        generate_child_code()
-        
-        print("🔹 Running the child AI...")
-        child_output, execution_time, memory_usage = run_child()
-        print(f"🔹 Child AI output: {child_output}, Execution Time: {execution_time:.2f}s, Memory: {memory_usage:.2f}MB")
-        
-        if evaluate_child_performance(child_output, execution_time, memory_usage):
-            print("✅ Child AI is better. Updating parent AI...")
-            update_parent_code()
-        else:
-            print("❌ Child AI is worse. Keeping current version.")
-        
-        time.sleep(5)  # Wait before next iteration
+    print("✅ Child AI code generated successfully!

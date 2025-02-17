@@ -72,7 +72,7 @@ def improve_code_with_huggingface(code):
         - A new feature for learning from past failures
         - Faster and more efficient logic
         - Parallel execution if possible
-         - Make sure the AI is more robust and adaptable
+        - Make sure the AI is more robust and adaptable
         - MAke sure the new AI doesnt have any errors
 
         Here is the current AI code:

@@ -72,8 +72,6 @@ def improve_code_with_huggingface(code):
         - A new feature for learning from past failures
         - Faster and more efficient logic
         - Parallel execution if possible
-         - Make sure the AI is more robust and adaptable
-        - MAke sure the new AI doesnt have any errors
 
         Here is the current AI code:
         {code}
@@ -92,7 +90,6 @@ def improve_code_with_huggingface(code):
     except Exception as e:
         print("❌ AI Code Improvement Failed:", e)
         return code
-
 
 def save_best_ai():
     """

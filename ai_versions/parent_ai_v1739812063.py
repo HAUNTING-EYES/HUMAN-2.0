@@ -64,7 +64,7 @@ def improve_code_with_huggingface(code):
     print("🔍 Sending code to Hugging Face API for major improvements...")
     try:
         API_KEY = get_api_key()
-        client = InferenceClient(api_key=API_KEY)  # No need for 'provider' argument
+        client = InferenceClient(provider="hf-inference", api_key=API_KEY)
         
         prompt = f"""
         Improve this AI system by introducing:
@@ -72,8 +72,8 @@ def improve_code_with_huggingface(code):
         - A new feature for learning from past failures
         - Faster and more efficient logic
         - Parallel execution if possible
-         - Make sure the AI is more robust and adaptable
-        - MAke sure the new AI doesnt have any errors
+        - Make sure the AI is more robust and adaptable
+        - MAke sure the new AI doesnt have any errors 
 
         Here is the current AI code:
         {code}
@@ -83,8 +83,10 @@ def improve_code_with_huggingface(code):
 
         result = client.text_generation(
             model="codellama/CodeLlama-13b-hf",
-            prompt=prompt,  # Corrected to use 'prompt' and no 'inputs' argument
-            max_new_tokens=1000
+            inputs=prompt,
+            provider="hf-inference",
+            max_new_tokens=1000,
+            timeout=15,
         )
         
         print("✅ AI-generated major improvements received!")
@@ -92,7 +94,6 @@ def improve_code_with_huggingface(code):
     except Exception as e:
         print("❌ AI Code Improvement Failed:", e)
         return code
-
 
 def save_best_ai():
     """

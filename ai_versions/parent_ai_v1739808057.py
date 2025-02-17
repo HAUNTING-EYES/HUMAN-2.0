@@ -72,8 +72,6 @@ def improve_code_with_huggingface(code):
         - A new feature for learning from past failures
         - Faster and more efficient logic
         - Parallel execution if possible
-         - Make sure the AI is more robust and adaptable
-        - MAke sure the new AI doesnt have any errors
 
         Here is the current AI code:
         {code}
@@ -84,7 +82,8 @@ def improve_code_with_huggingface(code):
         result = client.text_generation(
             model="codellama/CodeLlama-13b-hf",
             prompt=prompt,  # Corrected to use 'prompt' and no 'inputs' argument
-            max_new_tokens=1000
+            max_new_tokens=1000,
+            timeout=15,
         )
         
         print("✅ AI-generated major improvements received!")

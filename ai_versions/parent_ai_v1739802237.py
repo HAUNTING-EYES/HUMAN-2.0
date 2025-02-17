@@ -6,24 +6,6 @@ import psutil
 import requests  # Hugging Face API
 import shutil
 from huggingface_hub import InferenceClient
-from dotenv import load_dotenv
-
-# Load environment variables from .env file
-load_dotenv()
-
-def get_api_key():
-    """
-    Fetches the Hugging Face API key securely.
-    """
-    api_key = os.getenv("HF_API_KEY")
-    if not api_key:
-        raise ValueError("❌ API key not found. Ensure HF_API_KEY is set in your .env file.")
-    return api_key
-
-# Test fetching the API key
-if __name__ == "__main__":
-    print("Your Hugging Face API key is:", get_api_key())
-
 
 def run_child():
     """
@@ -55,25 +37,29 @@ def evaluate_child_performance(output, execution_time, memory_usage):
     if execution_time is None or memory_usage is None:
         return False  # If metrics are missing, reject update
 
+    # Allow AI to experiment with slower but potentially smarter code
     return execution_time < 2.5 and memory_usage < 100
+
 
 def improve_code_with_huggingface(code):
     """
     Uses Hugging Face's Hosted API to introduce major improvements in AI logic.
     """
     print("🔍 Sending code to Hugging Face API for major improvements...")
+    API_KEY = os.getenv("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")
+    if not API_KEY:
+        print("❌ Error: API key not found.")
+        return code
+
+    client = InferenceClient(provider="hf-inference", api_key=API_KEY)
+
     try:
-        API_KEY = get_api_key()
-        client = InferenceClient(api_key=API_KEY)  # No need for 'provider' argument
-        
         prompt = f"""
         Improve this AI system by introducing:
         - A more optimized, self-improving algorithm
         - A new feature for learning from past failures
         - Faster and more efficient logic
         - Parallel execution if possible
-         - Make sure the AI is more robust and adaptable
-        - MAke sure the new AI doesnt have any errors
 
         Here is the current AI code:
         {code}
@@ -83,27 +69,85 @@ def improve_code_with_huggingface(code):
 
         result = client.text_generation(
             model="codellama/CodeLlama-13b-hf",
-            prompt=prompt,  # Corrected to use 'prompt' and no 'inputs' argument
-            max_new_tokens=1000
+            inputs=prompt,
+            provider="hf-inference",
+            max_new_tokens=1000,  # Bigger response
+            timeout=15,
         )
         
         print("✅ AI-generated major improvements received!")
         return result
     except Exception as e:
         print("❌ AI Code Improvement Failed:", e)
-        return code
-
+        return code  # Return original if API fails
 
 def save_best_ai():
     """
     Saves the current best AI version before updating.
     """
     if not os.path.exists("ai_versions"):
-        os.makedirs("ai_versions")
+        os.makedirs("ai_versions")  # Create directory if missing
 
     timestamp = int(time.time())
     shutil.copy("parent_ai.py", f"ai_versions/parent_ai_v{timestamp}.py")
     print(f"💾 Saved best AI version: ai_versions/parent_ai_v{timestamp}.py")
+
+def test_ai_functionality():
+    """
+    Runs the AI to check if the new version is working correctly.
+    """
+    output, exec_time, mem_usage = run_child()
+    if "SUCCESS" not in output:
+        print("❌ AI failed functionality test! Reverting to last version.")
+        return False
+    if exec_time > 2.0:
+        print("⚠️ AI is too slow! Reverting to last version.")
+        return False
+    if mem_usage > 50:
+        print("⚠️ AI uses too much memory! Reverting to last version.")
+        return False
+    return True
+
+def review_ai_code(new_code):
+    """
+    Sends new AI-generated code to another AI for review.
+    """
+    print("🔍 Sending AI-generated code for review...")
+    API_KEY = os.getenv("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")
+    if not API_KEY:
+        print("❌ Error: API key not found.")
+        return False
+
+    client = InferenceClient(provider="hf-inference", api_key=API_KEY)
+
+    review_prompt = f"""
+    Review the following Python AI system update. 
+    - Does it improve efficiency and learning speed?
+    - Are there any errors or weaknesses in the code?
+    - Suggest any final refinements before accepting it.
+
+    Here is the new AI code:
+    {new_code}
+    """
+    
+    try:
+        review = client.text_generation(
+            model="codellama/CodeLlama-13b-hf",
+            inputs=review_prompt,
+            provider="hf-inference",
+            max_new_tokens=500,
+            timeout=15,
+        )
+        
+        print("✅ AI review completed! Review output:")
+        print(review)
+        if "error" in review.lower() or "weakness" in review.lower():
+            print("❌ AI review found issues. Rejecting update.")
+            return False
+        return True
+    except Exception as e:
+        print("❌ AI Review Failed:", e)
+        return False
 
 def update_parent_code():
     """
@@ -118,14 +162,18 @@ def update_parent_code():
         print("❌ AI-generated code is empty. Keeping current version.")
         return
 
+    # Save AI response to a file for debugging
     with open("ai_generated_code.py", "w", encoding="utf-8") as debug_file:
         debug_file.write(improved_logic)
     
-    if "def" in improved_logic:
+    if "def" in improved_logic:  # Check if AI returned valid code
         save_best_ai()
-        with open("parent_ai.py", "w", encoding="utf-8") as parent_file:
-            parent_file.write(improved_logic)
-        print("✅ Parent AI logic improved with AI-generated updates!")
+        if review_ai_code(improved_logic) and test_ai_functionality():
+            with open("parent_ai.py", "w", encoding="utf-8") as parent_file:
+                parent_file.write(improved_logic)
+            print("✅ Parent AI logic improved with AI-generated updates!")
+        else:
+            print("🔄 Rolling back to previous version...")
     else:
         print("❌ Failed to update Parent AI. AI did not return valid Python code.")
 
@@ -137,7 +185,7 @@ def generate_child_code():
     with open("parent_ai.py", "r", encoding="utf-8") as parent_file:
         parent_code = parent_file.read()
     
-    modified_code = parent_code.replace("time.sleep(random.uniform(0.4, 1.2))", "time.sleep(random.uniform(0.4, 1.2))")
+    modified_code = parent_code.replace("time.sleep(random.uniform(0.5, 1.5))", "time.sleep(random.uniform(0.4, 1.2))")
     
     with open("child_ai.py", "w", encoding="utf-8") as child_file:
         child_file.write(modified_code)
@@ -155,7 +203,7 @@ if __name__ == "__main__":
         print(f"🔹 Child AI output: {child_output}, Execution Time: {execution_time:.2f}s, Memory: {memory_usage:.2f}MB")
         
         if evaluate_child_performance(child_output, execution_time, memory_usage):
-            print("✅ Child AI is better. Updating parent AI...")
+            print("✅ Child AI is better. Running AI review...")
             update_parent_code()
         else:
             print("❌ Child AI is worse. Keeping current version.")
