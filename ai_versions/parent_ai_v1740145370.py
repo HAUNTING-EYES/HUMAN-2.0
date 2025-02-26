@@ -11,6 +11,10 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
+# Set the model identifier for self-improvement API calls
+# Ensure this is the correct model ID for DeepSeek R1.
+MODEL_NAME_FOR_UPDATES = os.getenv("MODEL_NAME_FOR_UPDATES", "deepseek-ai/deepseek-r1")
+
 def get_api_key():
     """
     Fetches the Hugging Face API key securely.
@@ -42,7 +46,6 @@ def run_child():
 
         # Attempt to get memory usage (in MB) for the child process.
         try:
-            # Even if the child has terminated, psutil may report its last-known memory info.
             mem_info = psutil.Process(process.pid).memory_info().rss / (1024 * 1024)
         except Exception as e:
             mem_info = 0
@@ -66,13 +69,13 @@ def evaluate_child_performance(output, execution_time, memory_usage):
 
 def improve_code_with_huggingface(code):
     """
-    Uses Hugging Face's API to introduce targeted improvements (fine-tuning modifications)
+    Uses Hugging Face's API (via DeepSeek R1) to introduce targeted improvements
     in the AI logic.
     """
-    print("🔍 Sending code to Hugging Face API for structured improvements...")
+    print("🔍 Sending code to DeepSeek R1 for structured improvements...")
     try:
         API_KEY = get_api_key()
-        client = InferenceClient(api_key=API_KEY)
+        client = InferenceClient(api_key=API_KEY, provider="hf-inference")
         improvement_areas = [
             "Optimize execution speed by reducing redundant operations",
             "Improve error handling to make AI more robust",
@@ -88,20 +91,21 @@ def improve_code_with_huggingface(code):
         Here is the current AI code:
         {code}
         """
+        messages = [{"role": "user", "content": prompt}]
         retries = 3
         for attempt in range(retries):
             try:
-                result = client.text_generation(
-                    model="codellama/CodeLlama-13b-hf",
-                    prompt=prompt,
-                    max_new_tokens=1000
+                result = client.chat.completions.create(
+                    model=MODEL_NAME_FOR_UPDATES,
+                    messages=messages,
+                    max_tokens=1000
                 )
+                result_text = result.choices[0].message.content.strip()
                 print(f"✅ AI-generated improvements received! [Focus: {selected_improvement}]")
-                result = result.strip()
-                if "def " not in result or "if __name__" not in result:
+                if "def " not in result_text or "if __name__" not in result_text:
                     print("❌ AI-generated code is incomplete. Keeping current version.")
                     return code
-                return result
+                return result_text
             except Exception as e:
                 print(f"❌ AI Code Improvement Failed (Attempt {attempt+1}/{retries}):", e)
                 if attempt < retries - 1:
@@ -116,55 +120,56 @@ def improve_code_with_huggingface(code):
 
 def upgrade_ai_module(code):
     """
-    Uses Hugging Face's API to generate a radical upgrade in the AI's capabilities—
+    Uses Hugging Face's API (via DeepSeek R1) to generate a radical upgrade in the AI's capabilities—
     specifically, integrating a self-reflection/meta-learning module.
     
     The new module should:
-    - Enable the AI to log its chain-of-thought (its internal reasoning process) during code generation.
+    - Enable the AI to log its chain-of-thought during code generation.
     - Analyze its reasoning to determine when a radical, functionality-changing update is needed.
     - Adjust the "learning rate" for self-modification: allow for larger, radical changes in early iterations,
       and gradually shift to fine-tuning as performance improves.
     - Be modular, so that the new self-reflection component can be maintained separately.
-    - Ensure that the overall system remains functional and free of errors.
+    - Ensure that the overall system remains functional and error-free.
     
     Return only the updated Python script.
     """
-    print("🔍 Requesting radical upgrade (self-reflection module) from Hugging Face API...")
+    print("🔍 Requesting radical upgrade (self-reflection module) from DeepSeek R1...")
     try:
         API_KEY = get_api_key()
-        client = InferenceClient(api_key=API_KEY)
+        client = InferenceClient(api_key=API_KEY, provider="hf-inference")
         prompt = f"""
         You are an expert AI software architect. The current AI system iteratively improves itself by generating a child version,
         evaluating its performance, and updating the parent if the child is better.
         
         The next radical upgrade is to incorporate a self-reflection and meta-learning module into the AI.
         This new module should:
-        - Enable the AI to log its chain-of-thought (its internal reasoning process) during code generation.
+        - Enable the AI to log its chain-of-thought during code generation.
         - Analyze its reasoning to determine when a radical, functionality-changing update is needed.
         - Adjust the "learning rate" for self-modification: allow for larger, radical changes in early iterations,
           and gradually shift to fine-tuning as performance improves.
         - Be modular, so that the new self-reflection component can be maintained separately.
-        - Ensure that the overall system remains functional and free of errors.
+        - Ensure that the overall system remains functional and error-free.
         
         Return only the fully functional Python script with these changes integrated, without explanations.
         
         Here is the current AI code:
         {code}
         """
+        messages = [{"role": "user", "content": prompt}]
         retries = 3
         for attempt in range(retries):
             try:
-                result = client.text_generation(
-                    model="codellama/CodeLlama-13b-hf",
-                    prompt=prompt,
-                    max_new_tokens=2000
+                result = client.chat.completions.create(
+                    model=MODEL_NAME_FOR_UPDATES,
+                    messages=messages,
+                    max_tokens=2000
                 )
                 print("✅ Radical upgrade received: self-reflection module integrated!")
-                result = result.strip()
-                if "def " not in result or "if __name__" not in result:
+                result_text = result.choices[0].message.content.strip()
+                if "def " not in result_text or "if __name__" not in result_text:
                     print("❌ AI-generated radical upgrade is incomplete. Keeping current version.")
                     return code
-                return result
+                return result_text
             except Exception as e:
                 print(f"❌ Radical upgrade attempt {attempt+1}/{retries} failed:", e)
                 if attempt < retries - 1:
@@ -199,10 +204,8 @@ def update_parent_code(learning_stage):
         child_logic = child_file.read()
     
     if learning_stage == 0:
-        # Radical change: incorporate a new self-reflection module.
         improved_logic = upgrade_ai_module(child_logic)
     else:
-        # Fine-tuning improvements.
         improved_logic = improve_code_with_huggingface(child_logic)
     
     if not improved_logic or len(improved_logic.strip()) == 0:
@@ -261,7 +264,6 @@ if __name__ == "__main__":
             print("✅ Child AI is better. Updating parent AI...")
             update_parent_code(learning_stage)
             successful_updates += 1
-            # After a certain number of radical updates, transition to fine-tuning.
             if successful_updates >= 5:
                 learning_stage = 1
                 print("🔄 Transitioning to fine-tuning stage for incremental improvements.")

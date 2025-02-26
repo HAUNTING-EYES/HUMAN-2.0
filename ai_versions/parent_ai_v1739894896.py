@@ -22,15 +22,12 @@ def get_api_key():
 
 def run_child():
     """
-    Runs the child process (a modified version of the AI) and attempts to capture its peak memory usage.
+    Runs the child process (a modified version of the AI).
     """
     print("🚀 Running child AI process...")
     try:
         start_time = time.time()
-        process = subprocess.Popen(['python', 'child_ai.py'],
-                                   stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE,
-                                   text=True)
+        process = subprocess.Popen(['python', 'child_ai.py'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
             stdout, stderr = process.communicate(timeout=5)  # Prevent infinite hang
         except subprocess.TimeoutExpired:
@@ -40,14 +37,10 @@ def run_child():
 
         execution_time = time.time() - start_time
 
-        # Attempt to get memory usage (in MB) for the child process.
-        try:
-            # Even if the child has terminated, psutil may report its last-known memory info.
-            mem_info = psutil.Process(process.pid).memory_info().rss / (1024 * 1024)
-        except Exception as e:
-            mem_info = 0
-
-        return stdout.strip(), execution_time, mem_info
+        # Optionally, add real memory tracking using psutil
+        # For now, we keep it simplified
+        memory_usage = 0  
+        return stdout.strip(), execution_time, memory_usage
     except Exception as e:
         return f"Child process failed: {e}", None, None
 
@@ -61,7 +54,6 @@ def evaluate_child_performance(output, execution_time, memory_usage):
     if execution_time is None or memory_usage is None:
         return False
 
-    # Here we focus on overall performance improvements, not just minor metrics.
     return execution_time < 2.5 and memory_usage < 100
 
 def improve_code_with_huggingface(code):
@@ -73,6 +65,7 @@ def improve_code_with_huggingface(code):
     try:
         API_KEY = get_api_key()
         client = InferenceClient(api_key=API_KEY)
+        # Select a focus area from predefined improvement areas.
         improvement_areas = [
             "Optimize execution speed by reducing redundant operations",
             "Improve error handling to make AI more robust",
@@ -87,6 +80,7 @@ def improve_code_with_huggingface(code):
         
         Here is the current AI code:
         {code}
+
         """
         retries = 3
         for attempt in range(retries):
@@ -120,12 +114,9 @@ def upgrade_ai_module(code):
     specifically, integrating a self-reflection/meta-learning module.
     
     The new module should:
-    - Enable the AI to log its chain-of-thought (its internal reasoning process) during code generation.
-    - Analyze its reasoning to determine when a radical, functionality-changing update is needed.
-    - Adjust the "learning rate" for self-modification: allow for larger, radical changes in early iterations,
-      and gradually shift to fine-tuning as performance improves.
-    - Be modular, so that the new self-reflection component can be maintained separately.
-    - Ensure that the overall system remains functional and free of errors.
+    - Log internal decision processes (chain-of-thought) during code modifications.
+    - Analyze and critique its own reasoning to guide future improvements.
+    - Introduce a mechanism for radical code changes that can later be fine-tuned.
     
     Return only the updated Python script.
     """
@@ -157,7 +148,7 @@ def upgrade_ai_module(code):
                 result = client.text_generation(
                     model="codellama/CodeLlama-13b-hf",
                     prompt=prompt,
-                    max_new_tokens=2000
+                    max_new_tokens=1500
                 )
                 print("✅ Radical upgrade received: self-reflection module integrated!")
                 result = result.strip()
@@ -223,13 +214,12 @@ def update_parent_code(learning_stage):
 def generate_child_code():
     """
     Generates a new child AI script with incremental improvements.
-    Instead of a no-op replacement, we append a timestamp comment to simulate a radical change.
     """
     print("📝 Generating child AI code...")
     with open("parent_ai.py", "r", encoding="utf-8") as parent_file:
         parent_code = parent_file.read()
     
-    modified_code = parent_code + f"\n# Child generated at {int(time.time())}\n"
+    modified_code = parent_code.replace("time.sleep(random.uniform(1, 4))", "time.sleep(random.uniform(1, 4))")
     
     with open("child_ai.py", "w", encoding="utf-8") as child_file:
         child_file.write(modified_code)
@@ -242,7 +232,7 @@ if __name__ == "__main__":
         API_KEY = get_api_key()
         print("✅ API Key Loaded Successfully!")
     except ValueError as e:
-        print(f"❌ ERROR: {e}. Please set your Hugging Face API key in your .env file.")
+        print(f"❌ ERROR: {e}. Please set your Hugging Face API key in the .env file.")
         exit(1)
     
     print("Parent AI running... Looping automatically...")

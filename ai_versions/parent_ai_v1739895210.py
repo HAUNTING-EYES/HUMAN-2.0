@@ -157,7 +157,7 @@ def upgrade_ai_module(code):
                 result = client.text_generation(
                     model="codellama/CodeLlama-13b-hf",
                     prompt=prompt,
-                    max_new_tokens=2000
+                    max_new_tokens=1500
                 )
                 print("✅ Radical upgrade received: self-reflection module integrated!")
                 result = result.strip()

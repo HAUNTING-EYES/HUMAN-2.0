@@ -11,6 +11,9 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
+# Set the model identifier for self-improvement API calls
+MODEL_NAME_FOR_UPDATES = os.getenv("MODEL_NAME_FOR_UPDATES", "deepseek/R1")
+
 def get_api_key():
     """
     Fetches the Hugging Face API key securely.
@@ -42,7 +45,6 @@ def run_child():
 
         # Attempt to get memory usage (in MB) for the child process.
         try:
-            # Even if the child has terminated, psutil may report its last-known memory info.
             mem_info = psutil.Process(process.pid).memory_info().rss / (1024 * 1024)
         except Exception as e:
             mem_info = 0
@@ -67,7 +69,7 @@ def evaluate_child_performance(output, execution_time, memory_usage):
 def improve_code_with_huggingface(code):
     """
     Uses Hugging Face's API to introduce targeted improvements (fine-tuning modifications)
-    in the AI logic.
+    in the AI logic using DeepSeek R1.
     """
     print("🔍 Sending code to Hugging Face API for structured improvements...")
     try:
@@ -92,7 +94,7 @@ def improve_code_with_huggingface(code):
         for attempt in range(retries):
             try:
                 result = client.text_generation(
-                    model="codellama/CodeLlama-13b-hf",
+                    model=MODEL_NAME_FOR_UPDATES,
                     prompt=prompt,
                     max_new_tokens=1000
                 )
@@ -116,7 +118,7 @@ def improve_code_with_huggingface(code):
 
 def upgrade_ai_module(code):
     """
-    Uses Hugging Face's API to generate a radical upgrade in the AI's capabilities—
+    Uses Hugging Face's API (via DeepSeek R1) to generate a radical upgrade in the AI's capabilities—
     specifically, integrating a self-reflection/meta-learning module.
     
     The new module should:
@@ -155,7 +157,7 @@ def upgrade_ai_module(code):
         for attempt in range(retries):
             try:
                 result = client.text_generation(
-                    model="codellama/CodeLlama-13b-hf",
+                    model=MODEL_NAME_FOR_UPDATES,
                     prompt=prompt,
                     max_new_tokens=2000
                 )
