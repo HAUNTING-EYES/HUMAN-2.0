@@ -1,0 +1,9 @@
+[submodule "AutoGPT"]
+    path = AutoGPT
+    url = https://github.com/Significant-Gravitas/AutoGPT.git
+    branch = master
+
+[submodule "babyagi"]
+    path = babyagi
+    url = https://github.com/yoheinakajima/babyagi.git
+    branch = main 
