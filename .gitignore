@@ -24,6 +24,7 @@ wheels/
 venv/
 env/
 ENV/
+myenv/
 
 # IDE
 .idea/
@@ -39,10 +40,20 @@ learning_data/
 vector_store/
 analysis_results.json
 improvement_evaluation.json
-
-# Logs
+funztionz.db
+encryption_key.json
+logs.txt
 *.log
+logs/
 
 # System
 .DS_Store
-Thumbs.db 
+Thumbs.db
+
+# Keep these directories
+!AutoGPT/
+!babyagi/
+!BRAIN/
+!brainstem/
+!history/
+!ai_versions/ 
