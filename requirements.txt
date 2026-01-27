@@ -1,37 +1,101 @@
 # Core dependencies
-numpy>=1.21.0
-pandas>=1.3.0
-scikit-learn>=0.24.2
-torch>=1.9.0
-transformers>=4.11.0
+numpy>=1.24.0
+pandas>=1.5.0
+scikit-learn>=1.0.0
+torch>=2.0.0
+transformers>=4.30.0
 sentence-transformers>=2.2.0
+datasets>=2.12.0
+evaluate>=0.4.0
+
+# Deep Learning and Optimization
+optuna>=3.2.0
+pytorch-lightning>=2.0.0
+torchmetrics>=1.0.0
+accelerate>=0.20.0
+
+# Emotion Analysis
+nltk>=3.6.3
+text2emotion>=0.0.5
+ekphrasis>=0.5.1
+
+# Feature Processing
+librosa>=0.10.0  # for audio processing
+opencv-python>=4.7.0  # for visual processing
+mediapipe>=0.10.0  # for gesture recognition
+
+# Vector Storage and Retrieval
+faiss-cpu>=1.7.4  # Using CPU version since we have AMD GPU
+hnswlib>=0.7.0
+
+# Hugging Face Integration
+huggingface-hub>=0.14.1
+tokenizers>=0.13.3
+
+# Optimization and Performance
+torch_optimizer>=0.3.0
+numba>=0.56.4  # For CPU optimization
+pyarrow>=12.0.0
+
+# Metrics and Monitoring
+wandb>=0.15.4  # for experiment tracking
+mlflow>=2.3.1
 
 # Web and API
-requests>=2.26.0
-beautifulsoup4>=4.9.3
-markdown>=3.3.4
-PyGithub>=1.55
-
-# NLP and ML
-spacy>=3.1.0
-nltk>=3.6.3
-chromadb>=0.3.0
-
-# Data processing
-networkx>=2.6.3
-tqdm>=4.62.3
-
-# Testing and development
-pytest>=6.2.5
-pytest-cov>=2.12.1
-black>=21.9b0
-flake8>=3.9.2
-
-# Documentation
-sphinx>=4.2.0
-sphinx-rtd-theme>=0.5.2
+fastapi>=0.95.2
+uvicorn[standard]>=0.18.3
+python-multipart>=0.0.6
 
 # Utilities
-python-dotenv>=0.19.0
-tqdm>=4.62.3
+python-dotenv>=1.0.0
+tqdm>=4.65.0
 colorama>=0.4.4
+
+# Code optimization
+gymnasium>=0.29.0
+stable-baselines3>=2.1.0
+libcst>=1.0.0
+ast-comments>=1.0.0
+typing-extensions>=4.5.0
+dataclasses>=0.6
+pyyaml>=6.0.0
+
+# Model serving and monitoring
+uvicorn[standard]>=0.18.3
+prometheus-client>=0.16.0
+pydantic>=2.0.0
+aiofiles>=0.8.0
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+
+# Visualization
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Added from the code block
+scipy>=1.10.0
+networkx>=3.0
+psutil>=5.9.0
+
+# Audio processing (missing dependencies)
+SpeechRecognition>=3.10.0
+pyaudio>=0.2.13
+sounddevice>=0.4.6
+webrtcvad>=2.0.10
+
+# Visual emotion analysis
+deepface>=0.0.79
+tf-keras>=2.15.0
+
+# Web scraping and knowledge
+beautifulsoup4>=4.12.0
+requests>=2.31.0
+
+# GitHub integration
+PyGithub>=2.1.1
+
+# NLP processing
+spacy>=3.7.0
+
+# Vector database
+chromadb>=0.4.0
