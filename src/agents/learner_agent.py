@@ -219,7 +219,11 @@ class LearnerAgent(BaseAgent):
             return results if results else []
 
         except Exception as e:
-            self.logger.warning(f"GitHub search failed: {e}")
+            import traceback
+            error_type = type(e).__name__
+            error_tb = traceback.format_exc()
+            self.logger.warning(f"GitHub search failed: [{error_type}] {e}")
+            self.logger.debug(f"Full traceback:\n{error_tb}")
             # Return mock results for now
             return [
                 {

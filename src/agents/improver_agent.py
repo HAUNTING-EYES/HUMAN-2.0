@@ -165,9 +165,20 @@ class ImproverAgent(BaseAgent):
             # Cache the result
             self.resources.cache_response(cache_key, improved_code)
 
-        # Validate improvement
+        # Validate improvement with retry for syntax errors
         if not self._validate_improvement(original_code, improved_code):
-            raise ValueError("Generated improvement failed validation")
+            # Check if it's specifically a syntax error
+            syntax_valid, syntax_error = self._check_syntax(improved_code)
+            if not syntax_valid:
+                self.logger.warning(f"Syntax error detected, attempting fix: {syntax_error}")
+                # Retry with simpler prompt to fix syntax
+                improved_code = await self._fix_syntax_errors(improved_code, syntax_error)
+
+                # Validate again after fix attempt
+                if not self._validate_improvement(original_code, improved_code):
+                    raise ValueError("Generated improvement failed validation even after syntax fix attempt")
+            else:
+                raise ValueError("Generated improvement failed validation")
 
         # Create improvement object
         improvement = Improvement(
@@ -729,6 +740,77 @@ Return the complete improved code:
             pass  # Skip this check if parsing fails
 
         return True
+
+    def _check_syntax(self, code: str) -> tuple:
+        """
+        Check if code has valid Python syntax.
+
+        Returns:
+            Tuple of (is_valid: bool, error_message: str)
+        """
+        try:
+            ast.parse(code)
+            return True, ""
+        except SyntaxError as e:
+            error_msg = f"Line {e.lineno}: {e.msg}"
+            return False, error_msg
+
+    async def _fix_syntax_errors(self, broken_code: str, syntax_error: str) -> str:
+        """
+        Attempt to fix syntax errors with a simple, focused prompt.
+        This uses fewer tokens and is more likely to succeed.
+
+        Args:
+            broken_code: Code with syntax errors
+            syntax_error: The specific syntax error message
+
+        Returns:
+            Fixed code (or original if fix fails)
+        """
+        if not self.client:
+            return broken_code
+
+        simple_prompt = f"""Fix ONLY the syntax error in this Python code. Do NOT refactor or change logic.
+
+SYNTAX ERROR: {syntax_error}
+
+CODE:
+```python
+{broken_code}
+```
+
+Return ONLY the corrected Python code with the syntax error fixed. No explanations."""
+
+        try:
+            self.logger.info("Attempting syntax fix with simplified prompt...")
+            message = self.client.messages.create(
+                model=self.config['model'],
+                max_tokens=self.config['max_tokens'],
+                temperature=0.1,  # Lower temperature for more deterministic fix
+                timeout=60,  # Shorter timeout for simple fix
+                messages=[{"role": "user", "content": simple_prompt}]
+            )
+
+            fixed_code = message.content[0].text
+
+            # Extract code from markdown if present
+            if "```python" in fixed_code:
+                fixed_code = fixed_code.split("```python")[1].split("```")[0].strip()
+            elif "```" in fixed_code:
+                fixed_code = fixed_code.split("```")[1].split("```")[0].strip()
+
+            # Verify the fix worked
+            is_valid, _ = self._check_syntax(fixed_code)
+            if is_valid:
+                self.logger.info("Syntax fix successful!")
+                return fixed_code
+            else:
+                self.logger.warning("Syntax fix attempt failed, returning original")
+                return broken_code
+
+        except Exception as e:
+            self.logger.error(f"Syntax fix API call failed: {e}")
+            return broken_code
 
     async def _apply_improvement(self, improvement: Improvement) -> bool:
         """
