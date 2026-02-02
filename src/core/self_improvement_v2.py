@@ -43,18 +43,18 @@ load_dotenv()
 
 class ClaudeCodeImprover:
     """
-    Claude 3.5 Sonnet for code improvement (via OpenAI-compatible API).
+    Claude 3.5 Sonnet for code improvement (via native Anthropic API).
 
     Better at code generation than Llama.
     """
 
     def __init__(self):
-        self.api_key = os.getenv('OPENAI_API_KEY')
-        self.model = 'gpt-4'  # Actually Claude 3.5 Sonnet
+        self.api_key = os.getenv('ANTHROPIC_API_KEY')
+        self.model = 'claude-3-5-sonnet-20241022'
         self.logger = logging.getLogger(__name__)
 
         if not self.api_key:
-            raise ValueError("OPENAI_API_KEY not found in environment")
+            raise ValueError("ANTHROPIC_API_KEY not found in environment")
 
     def generate_improvement_with_context(self, context: Dict[str, Any]) -> str:
         """
@@ -152,12 +152,13 @@ Return only the improved code:"""
         return self._call_claude(prompt)
 
     def _call_claude(self, prompt: str) -> str:
-        """Call Claude via OpenAI-compatible API"""
+        """Call Claude via native Anthropic API"""
         import requests
 
         try:
             headers = {
-                'Authorization': f'Bearer {self.api_key}',
+                'x-api-key': self.api_key,
+                'anthropic-version': '2023-06-01',
                 'Content-Type': 'application/json'
             }
 
@@ -165,20 +166,21 @@ Return only the improved code:"""
                 'model': self.model,
                 'messages': [{'role': 'user', 'content': prompt}],
                 'temperature': 0.3,
-                'max_tokens': 4000  # Increased for larger responses
+                'max_tokens': 4096
             }
 
             response = requests.post(
-                'https://api.openai.com/v1/chat/completions',
+                'https://api.anthropic.com/v1/messages',
                 headers=headers,
                 json=data,
-                timeout=300  # Increased to 5 minutes for large files
+                timeout=120  # 2 minutes - Claude is faster than GPT-4
             )
 
             response.raise_for_status()
             result = response.json()
 
-            content = result['choices'][0]['message']['content']
+            # Anthropic API format: content is array of content blocks
+            content = result['content'][0]['text']
 
             # Extract code from markdown if present
             if '```python' in content:

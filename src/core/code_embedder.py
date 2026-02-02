@@ -48,10 +48,10 @@ class CodeEmbedder:
             settings=Settings(anonymized_telemetry=False)
         )
 
-        # Initialize embeddings model
+        # Initialize embeddings model (384 dimensions)
         self.logger.info("Initializing HuggingFace embeddings...")
         self.embeddings = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-mpnet-base-v2",
+            model_name="sentence-transformers/all-MiniLM-L6-v2",  # 384 dimensions, faster
             model_kwargs={'device': 'cpu'},
             encode_kwargs={'device': 'cpu', 'batch_size': 32}
         )

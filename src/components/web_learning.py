@@ -1497,25 +1497,9 @@ class WebLearningSystem:
                         'content': line.strip(),
                         'context': lines[max(0, i-2):min(len(lines), i+3)]
                     })
-                    
+
             return patterns
-            
-        except Exception as e:
-            self.logger.error(f"Error extracting code patterns: {str(e)}")
-            return []
-                    })
-                    
-                # Import statements
-                elif re.match(r'import\s+\w+', line) or re.match(r'from\s+\w+\s+import', line):
-                    patterns.append({
-                        'type': 'import',
-                        'line': i + 1,
-                        'content': line.strip(),
-                        'context': lines[max(0, i-2):min(len(lines), i+3)]
-                    })
-                    
-            return patterns
-            
+
         except Exception as e:
             self.logger.error(f"Error extracting code patterns: {str(e)}")
             return [] 
