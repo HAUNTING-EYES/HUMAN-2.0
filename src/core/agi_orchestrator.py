@@ -403,4 +403,11 @@ class AGIOrchestrator:
 
     def _optimize_with_sufficient_data(self, meta_stats: Dict[str, Any]) -> Dict[str, Any]:
         """Optimize when sufficient data is available"""
-        optimized_params = self.meta
+        optimized_params = self.meta_learner.optimize_strategies()
+        self.logger.info(f"Meta-learning optimization complete: {optimized_params}")
+        return optimized_params
+
+    def _handle_insufficient_data(self, meta_stats: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle case when insufficient data for optimization"""
+        self.logger.info(f"Insufficient data for optimization ({meta_stats['total_improvements']} < 10)")
+        return {'status': 'insufficient_data', 'stats': meta_stats}
