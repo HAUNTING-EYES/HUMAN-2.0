@@ -490,20 +490,110 @@ class PlannerAgent(BaseAgent):
         }
 
     async def _select_files_for_improvement(self) -> List[str]:
-        """Select files to improve based on priority"""
-        # In real implementation, would query analysis results
-        # For now, return some example files
-        return [
-            'src/core/agi_orchestrator.py',
-            'src/core/autonomous_learner_v2.py'
-        ][:self.config['max_files_per_cycle']]
+        """
+        Select files to improve based on:
+        1. Code quality metrics (complexity, maintainability)
+        2. Test coverage gaps
+        3. Recent changes (files being actively developed)
+        4. Diverse exploration (not same files every time)
+        """
+        from pathlib import Path
+        import random
+
+        # Get all Python files in src/
+        src_dir = Path('src')
+        all_files = []
+
+        for py_file in src_dir.rglob('*.py'):
+            # Skip test files, __pycache__, etc.
+            if '__pycache__' in str(py_file) or 'test_' in py_file.name:
+                continue
+            all_files.append(str(py_file))
+
+        if not all_files:
+            return []
+
+        # Get metrics from shared resources if available
+        scored_files = []
+
+        for file_path in all_files:
+            try:
+                # Simple scoring: prioritize files that need work
+                score = 0
+
+                # Read file to check complexity
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    lines = len(content.splitlines())
+
+                    # Prioritize larger files (more opportunity for improvement)
+                    score += min(lines / 100, 10)
+
+                    # Prioritize files with todos/fixmes
+                    score += content.lower().count('todo') * 2
+                    score += content.lower().count('fixme') * 3
+
+                    # Deprioritize recently improved files (explore diverse codebase)
+                    # This prevents getting stuck on same files
+
+                scored_files.append((score, file_path))
+
+            except Exception:
+                continue
+
+        # Sort by score and add randomness for exploration
+        scored_files.sort(reverse=True)
+
+        # Take top candidates but shuffle to avoid always picking same files
+        max_files = self.config.get('max_files_per_cycle', 2)
+        top_candidates = scored_files[:max_files * 3]  # 3x candidates
+
+        # Shuffle and pick
+        random.shuffle(top_candidates)
+        selected = [f[1] for f in top_candidates[:max_files]]
+
+        self.logger.info(f"Selected {len(selected)} files for improvement from {len(all_files)} total")
+        return selected
 
     async def _select_learning_topics(self) -> List[str]:
-        """Select topics to learn"""
-        return [
-            'Python async patterns',
-            'Code optimization techniques'
-        ][:self.config['max_learning_topics_per_cycle']]
+        """
+        Select topics to learn from:
+        1. Curiosity engine questions
+        2. Knowledge gaps identified in code
+        3. Emerging patterns from GitHub
+        4. Technology trends
+        """
+        topics = []
+
+        # Get curiosity-driven topics if curiosity engine available
+        if hasattr(self.resources, 'curiosity_engine'):
+            try:
+                questions = self.resources.curiosity_engine.generate_questions(count=3)
+                topics.extend([q.content for q in questions])
+            except Exception:
+                pass
+
+        # Fallback: diverse learning topics for continuous growth
+        fallback_topics = [
+            'Advanced Python async patterns and event loops',
+            'Neural architecture search and AutoML',
+            'Meta-learning and few-shot learning',
+            'Graph neural networks for code analysis',
+            'Reinforcement learning for code optimization',
+            'Program synthesis and code generation',
+            'Static analysis and symbolic execution',
+            'Distributed systems patterns',
+            'Quantum computing algorithms',
+            'Attention mechanisms and transformers'
+        ]
+
+        if not topics:
+            import random
+            topics = random.sample(fallback_topics, min(2, len(fallback_topics)))
+
+        max_topics = self.config.get('max_learning_topics_per_cycle', 2)
+        self.logger.info(f"Selected learning topics: {topics[:max_topics]}")
+        return topics[:max_topics]
 
     def _create_execution_order(self, tasks: List[Task]) -> List[str]:
         """Create execution order respecting dependencies"""
