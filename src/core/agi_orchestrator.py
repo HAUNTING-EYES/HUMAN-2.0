@@ -222,11 +222,11 @@ class AGIOrchestrator:
 
         results['learning'] = await self.run_learning_cycle_async()
         results['improvement'] = await self.run_improvement_cycle_async()
-        results['reflection'] = self._run_reflection_cycle()
+        results['reflection'] = await asyncio.to_thread(self._run_reflection_cycle)
 
         if self._should_run_meta_learning():
             self.logger.info("\nPhase 4: Meta-Learning Optimization")
-            results['meta_learning'] = self._run_meta_learning_optimization()
+            results['meta_learning'] = await asyncio.to_thread(self._run_meta_learning_optimization)
 
         self._finalize_cycle(results)
 
@@ -386,28 +386,18 @@ class AGIOrchestrator:
         """Run meta-learning optimization"""
         try:
             meta_stats = self.meta_learner.get_statistics()
-            self._log_meta_statistics(meta_stats)
+            self.logger.info(f"Meta-learner stats: {meta_stats}")
 
-            if meta_stats['total_improvements'] >= 10:
-                return self._optimize_with_sufficient_data(meta_stats)
-            else:
-                return self._handle_insufficient_data(meta_stats)
+            total_improvements = meta_stats.get('total_improvements', 0)
+            
+            if total_improvements >= 10:
+                optimized_params = self.meta_learner.optimize_strategies()
+                self.logger.info(f"Meta-learning optimization complete: {optimized_params}")
+                return optimized_params
+            
+            self.logger.info(f"Insufficient data for optimization ({total_improvements} < 10)")
+            return {'status': 'insufficient_data', 'stats': meta_stats}
 
         except Exception as e:
             self.logger.error(f"Error in meta-learning optimization: {e}")
             return {'error': str(e)}
-
-    def _log_meta_statistics(self, meta_stats: Dict[str, Any]):
-        """Log meta-learning statistics"""
-        self.logger.info(f"Meta-learner stats: {meta_stats}")
-
-    def _optimize_with_sufficient_data(self, meta_stats: Dict[str, Any]) -> Dict[str, Any]:
-        """Optimize when sufficient data is available"""
-        optimized_params = self.meta_learner.optimize_strategies()
-        self.logger.info(f"Meta-learning optimization complete: {optimized_params}")
-        return optimized_params
-
-    def _handle_insufficient_data(self, meta_stats: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle case when insufficient data for optimization"""
-        self.logger.info(f"Insufficient data for optimization ({meta_stats['total_improvements']} < 10)")
-        return {'status': 'insufficient_data', 'stats': meta_stats}
