@@ -1,15 +1,27 @@
 import os
 import json
 import logging
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from datetime import datetime
 import numpy as np
 from sentence_transformers import SentenceTransformer
 import chromadb
+from pathlib import Path
+import torch
+import time
 
 class ContinuousLearningSystem:
+    """System for continuous learning and improvement."""
+    
     def __init__(self, base_dir: str):
-        self.base_dir = base_dir
+        """Initialize the continuous learning system.
+        
+        Args:
+            base_dir: Base directory for storing learning data
+        """
+        self.base_dir = Path(base_dir)
+        self.learning_dir = self.base_dir / "continuous_learning"
+        self.learning_dir.mkdir(parents=True, exist_ok=True)
         self.logger = logging.getLogger(__name__)
         
         # Initialize vector store
@@ -26,6 +38,16 @@ class ContinuousLearningSystem:
         
         # Load learning history
         self.learning_history = self._load_learning_history()
+        
+        # Initialize learning state
+        self.learning_state = {
+            "knowledge_base": {},
+            "improvement_history": [],
+            "performance_metrics": {}
+        }
+        
+        # Load existing state if available
+        self._load_state()
         
     def learn_from_interaction(self, interaction_data: Dict[str, Any]):
         """Learn from a new interaction"""
@@ -194,4 +216,176 @@ class ContinuousLearningSystem:
             with open(history_file, 'w') as f:
                 json.dump(self.learning_history, f, indent=2)
         except Exception as e:
-            self.logger.error(f"Error saving learning history: {str(e)}") 
+            self.logger.error(f"Error saving learning history: {str(e)}")
+            
+    def learn(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Process a learning task and update knowledge.
+        
+        Args:
+            task_data: Dictionary containing task data and metrics
+            
+        Returns:
+            Dictionary containing learning results
+        """
+        try:
+            # Extract task information
+            task_type = task_data.get("type", "unknown")
+            content = task_data.get("content", "")
+            context = task_data.get("context", {})
+            
+            if not content:
+                return {
+                    "status": "error",
+                    "message": "No content provided in task data"
+                }
+            
+            # Update knowledge base
+            knowledge_entry = {
+                "type": task_type,
+                "content": content,
+                "context": context,
+                "timestamp": task_data.get("timestamp", "")
+            }
+            
+            if task_type not in self.learning_state["knowledge_base"]:
+                self.learning_state["knowledge_base"][task_type] = []
+            self.learning_state["knowledge_base"][task_type].append(knowledge_entry)
+            
+            # Record learning attempt
+            self.learning_state["improvement_history"].append({
+                "task_type": task_type,
+                "content": content,
+                "timestamp": task_data.get("timestamp", "")
+            })
+            
+            # Save updated state
+            self._save_state()
+            
+            return {
+                "status": "success",
+                "knowledge_entry": knowledge_entry,
+                "knowledge_base_size": len(self.learning_state["knowledge_base"][task_type])
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error in learning process: {str(e)}")
+            return {
+                "status": "error",
+                "message": str(e)
+            }
+        
+    def improve(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Process a continuous learning task.
+        
+        Args:
+            task_data: Dictionary containing task information and learning data
+            
+        Returns:
+            Dictionary containing learning results and model updates
+        """
+        try:
+            # Extract learning data
+            learning_data = task_data.get('learning_data', {})
+            current_metrics = task_data.get('metrics', {})
+            
+            # Update learning history
+            self.learning_history.append({
+                'timestamp': datetime.now().isoformat(),
+                'task': task_data,
+                'metrics': current_metrics
+            })
+            
+            # Process new knowledge
+            knowledge_updates = self._process_new_knowledge(learning_data)
+            
+            # Update model if needed
+            model_updates = self._update_model(current_metrics)
+            
+            return {
+                'success': True,
+                'knowledge_updates': knowledge_updates,
+                'model_updates': model_updates,
+                'current_metrics': current_metrics,
+                'history_length': len(self.learning_history)
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+            
+    def _process_new_knowledge(self, learning_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Process and integrate new knowledge.
+        
+        Args:
+            learning_data: Dictionary containing new knowledge to process
+            
+        Returns:
+            Dictionary containing knowledge processing results
+        """
+        updates = {
+            'processed_items': 0,
+            'new_concepts': [],
+            'updated_concepts': []
+        }
+        
+        for item in learning_data.get('items', []):
+            # Process each knowledge item
+            concept = item.get('concept')
+            if concept:
+                if concept not in self.learning_state["knowledge_base"]:
+                    updates['new_concepts'].append(concept)
+                else:
+                    updates['updated_concepts'].append(concept)
+                    
+                self.learning_state["knowledge_base"][concept] = item
+                updates['processed_items'] += 1
+                
+        return updates
+        
+    def _update_model(self, metrics: Dict[str, float]) -> Dict[str, Any]:
+        """Update the learning model based on performance metrics.
+        
+        Args:
+            metrics: Dictionary of current performance metrics
+            
+        Returns:
+            Dictionary containing model update results
+        """
+        updates = {
+            'learning_rate_adjusted': False,
+            'model_complexity_adjusted': False,
+            'parameters_updated': False
+        }
+        
+        # Adjust learning rate if needed
+        if metrics.get('loss', float('inf')) > self.target_loss:
+            self.learning_state["performance_metrics"]["learning_rate"] *= 0.9
+            updates['learning_rate_adjusted'] = True
+            
+        # Update model parameters
+        if len(self.learning_history) >= self.batch_size:
+            # Perform batch update
+            updates['parameters_updated'] = True
+            
+        return updates
+    
+    def _load_state(self):
+        """Load learning state from file."""
+        state_file = self.learning_dir / "learning_state.json"
+        if state_file.exists():
+            try:
+                with open(state_file, "r") as f:
+                    self.learning_state = json.load(f)
+            except Exception as e:
+                self.logger.error(f"Error loading learning state: {str(e)}")
+    
+    def _save_state(self):
+        """Save learning state to file."""
+        state_file = self.learning_dir / "learning_state.json"
+        try:
+            with open(state_file, "w") as f:
+                json.dump(self.learning_state, f, indent=2)
+        except Exception as e:
+            self.logger.error(f"Error saving learning state: {str(e)}") 

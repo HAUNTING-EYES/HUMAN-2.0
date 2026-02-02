@@ -2,10 +2,14 @@ import os
 import json
 import logging
 from datetime import datetime
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from .web_learning import WebLearningSystem
 from .code_analyzer import CodeAnalyzer
 from .continuous_learning import ContinuousLearningSystem
+import torch
+import numpy as np
+import time
+from pathlib import Path
 
 class SelfImprovementSystem:
     def __init__(self, base_dir: str):
@@ -16,6 +20,8 @@ class SelfImprovementSystem:
         self.continuous_learning = ContinuousLearningSystem(base_dir)
         self.improvement_history = []
         self.current_improvements = []
+        self.performance_metrics = {}
+        self.adaptation_rate = 0.1
         
     def start_autonomous_improvement(self):
         """Start autonomous improvement process"""
@@ -157,3 +163,162 @@ class SelfImprovementSystem:
             
         successful = len([i for i in self.improvement_history if i['status'] == 'completed'])
         return (successful / len(self.improvement_history)) * 100 
+
+class SelfImprovement:
+    """System for continuous self-improvement and adaptation."""
+    
+    def __init__(self, base_dir: str):
+        """Initialize the self-improvement system.
+        
+        Args:
+            base_dir: Base directory for storing improvement data
+        """
+        self.base_dir = base_dir
+        self.data_dir = Path(base_dir) / "improvement_data"
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Setup logging
+        self.logger = logging.getLogger(__name__)
+        
+        # Initialize tracking
+        self.improvement_history = []
+        self.performance_metrics = {}
+        self.adaptation_rate = 0.1
+        
+        # Load existing data if available
+        self._load_history()
+    
+    def _load_history(self):
+        """Load improvement history from disk if it exists."""
+        history_file = self.data_dir / "improvement_history.json"
+        if history_file.exists():
+            try:
+                with open(history_file, 'r') as f:
+                    self.improvement_history = json.load(f)
+            except Exception as e:
+                self.logger.error(f"Failed to load improvement history: {e}")
+    
+    def _save_history(self):
+        """Save improvement history to disk."""
+        history_file = self.data_dir / "improvement_history.json"
+        try:
+            with open(history_file, 'w') as f:
+                json.dump(self.improvement_history, f)
+        except Exception as e:
+            self.logger.error(f"Failed to save improvement history: {e}")
+    
+    def analyze_performance(self, metrics: Dict[str, float]) -> Dict[str, Any]:
+        """Analyze current performance and suggest improvements.
+        
+        Args:
+            metrics: Dictionary of performance metrics
+            
+        Returns:
+            Dictionary containing analysis results and suggestions
+        """
+        try:
+            # Update performance metrics
+            self.performance_metrics.update(metrics)
+            
+            # Analyze trends
+            improvements = []
+            degradations = []
+            
+            for metric, value in metrics.items():
+                if len(self.improvement_history) > 0:
+                    prev_value = self.improvement_history[-1].get(metric)
+                    if prev_value is not None:
+                        if value > prev_value:
+                            improvements.append(metric)
+                        elif value < prev_value:
+                            degradations.append(metric)
+            
+            # Generate suggestions
+            suggestions = []
+            if degradations:
+                suggestions.append(f"Focus on improving: {', '.join(degradations)}")
+            if improvements:
+                suggestions.append(f"Maintain progress in: {', '.join(improvements)}")
+            
+            # Save current metrics to history
+            self.improvement_history.append(metrics)
+            self._save_history()
+            
+            return {
+                "success": True,
+                "improvements": improvements,
+                "degradations": degradations,
+                "suggestions": suggestions,
+                "current_metrics": self.performance_metrics
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error in performance analysis: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    def improve(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Process a self-improvement task.
+        
+        Args:
+            task_data: Dictionary containing task information and metrics
+            
+        Returns:
+            Dictionary containing improvement results and recommendations
+        """
+        try:
+            # Analyze current performance
+            analysis_results = self.analyze_performance(task_data.get('metrics', {}))
+            
+            # Record improvement attempt
+            self.improvement_history.append({
+                'timestamp': datetime.now().isoformat(),
+                'task': task_data,
+                'analysis': analysis_results
+            })
+            
+            # Update performance metrics
+            self.performance_metrics.update(task_data.get('metrics', {}))
+            
+            # Generate recommendations
+            recommendations = self._generate_recommendations(analysis_results)
+            
+            return {
+                'success': True,
+                'analysis': analysis_results,
+                'recommendations': recommendations,
+                'history_length': len(self.improvement_history)
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+            
+    def _generate_recommendations(self, analysis: Dict[str, Any]) -> List[str]:
+        """Generate improvement recommendations based on analysis.
+        
+        Args:
+            analysis: Analysis results dictionary
+            
+        Returns:
+            List of improvement recommendations
+        """
+        recommendations = []
+        
+        # Check performance trends
+        if analysis.get('performance_trend', 0) < 0:
+            recommendations.append("Review recent changes that may have negatively impacted performance")
+            
+        # Check error rates
+        if analysis.get('error_rate', 0) > 0.1:
+            recommendations.append("Focus on error reduction in critical components")
+            
+        # Check adaptation rate
+        if analysis.get('adaptation_score', 0) < 0.5:
+            recommendations.append("Increase adaptation rate for faster learning")
+            
+        return recommendations

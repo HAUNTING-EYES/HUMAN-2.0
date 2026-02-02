@@ -1,9 +1,9 @@
 import requests
 from bs4 import BeautifulSoup
 import json
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set, Union
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 from urllib.parse import urljoin, urlparse
 import re
@@ -25,124 +25,613 @@ from nltk.tokenize import word_tokenize
 import torch
 from transformers import AutoTokenizer, AutoModel
 from unittest.mock import Mock
+from . import quantum_inspired_nn as qinn
+from pathlib import Path
+from dotenv import load_dotenv
+import hashlib
+import chromadb
+from chromadb.config import Settings
+from sentence_transformers import SentenceTransformer
+import uuid
+
+# Load environment variables from root .env file
+root_dir = Path(__file__).parent.parent.parent
+load_dotenv(root_dir / '.env')
 
 class WebLearningSystem:
-    def __init__(self, base_dir: str):
-        self.base_dir = base_dir
-        self.visited_urls = set()
-        self.learning_data = []
+    """System for learning from web content using ChromaDB for vector storage."""
+    
+    def __init__(self, base_dir: str = "data/learning"):
+        """Initialize the web learning system.
+        
+        Args:
+            base_dir: Base directory for storing learned data
+        """
+        # Initialize base directory
+        self.base_dir = Path(base_dir)
+        os.makedirs(self.base_dir, exist_ok=True)
+        
+        # Initialize logger first
         self.logger = logging.getLogger(__name__)
-        self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        handler.setFormatter(formatter)
+        self.logger.addHandler(handler)
+        self.logger.setLevel(logging.INFO)
+        
+        self.db_path = self.base_dir / "chroma_db"
+        self.db_path.mkdir(parents=True, exist_ok=True)
+        
+        # Initialize vector database
+        try:
+            # Try ChromaDB first
+            import chromadb
+            self.client = chromadb.PersistentClient(path=str(self.db_path))
+            self.logger.info("Using ChromaDB for vector storage")
+        except Exception as e:
+            self.logger.warning(f"ChromaDB failed to initialize: {str(e)}")
+            self.logger.info("Falling back to in-memory vector storage")
+            self._init_memory_storage()
+        
+        # Initialize embeddings model
+        self.embeddings_model = SentenceTransformer('all-MiniLM-L6-v2')
+        
+        # Initialize sentiment analyzer
+        self.sentiment_analyzer = pipeline("sentiment-analysis")
+        
+        # Initialize zero-shot classifier
+        self.zero_shot_classifier = pipeline("zero-shot-classification")
+        
+        # Initialize cache and visited URLs
+        self.cache_dir = self.base_dir / "cache"
+        self.cache_dir.mkdir(exist_ok=True)
+        self.visited_urls = set()
+        self.min_request_interval = 1.0  # Minimum time between requests in seconds
+        self.last_request_time = 0.0
+        
+        # Initialize cache
+        self.cache_expiry = 3600  # Cache expiry in seconds
+        
+    def _init_memory_storage(self):
+        """Initialize in-memory vector storage as fallback."""
+        self.client = None
+        self.memory_collection = []
+        self.vector_dim = 768  # Standard embedding dimension
+        self.logger.info("Initialized in-memory vector storage")
+    
+    def _add_to_memory_storage(self, text: str, metadata: Dict[str, Any], embedding: List[float]):
+        """Add document to in-memory storage."""
+        if self.client is None:
+            # Use in-memory storage
+            self.memory_collection.append({
+                'text': text,
+                'metadata': metadata,
+                'embedding': embedding,
+                'id': str(len(self.memory_collection))
+            })
+        else:
+            # Use ChromaDB
+            try:
+                collection = self.client.get_or_create_collection("web_learning")
+                collection.add(
+                    documents=[text],
+                    metadatas=[metadata],
+                    embeddings=[embedding],
+                    ids=[str(uuid.uuid4())]
+                )
+            except Exception as e:
+                self.logger.error(f"ChromaDB error, falling back to memory: {str(e)}")
+                self._add_to_memory_storage(text, metadata, embedding)
+    
+    def _search_memory_storage(self, query_embedding: List[float], n_results: int = 5):
+        """Search in-memory storage."""
+        if self.client is None:
+            # Simple cosine similarity search in memory
+            import numpy as np
+            results = []
+            query_np = np.array(query_embedding)
+            
+            for doc in self.memory_collection:
+                doc_np = np.array(doc['embedding'])
+                similarity = np.dot(query_np, doc_np) / (np.linalg.norm(query_np) * np.linalg.norm(doc_np))
+                results.append({
+                    'text': doc['text'],
+                    'metadata': doc['metadata'],
+                    'similarity': float(similarity)
+                })
+            
+            # Sort by similarity and return top results
+            results.sort(key=lambda x: x['similarity'], reverse=True)
+            return results[:n_results]
+        else:
+            # Use ChromaDB
+            try:
+                collection = self.client.get_or_create_collection("web_learning")
+                results = collection.query(
+                    query_embeddings=[query_embedding],
+                    n_results=n_results
+                )
+                return results
+            except Exception as e:
+                self.logger.error(f"ChromaDB search error, falling back to memory: {str(e)}")
+                return self._search_memory_storage(query_embedding, n_results)
+        
+    def learn_from_url(self, url: str) -> Dict[str, Any]:
+        """Learn from content at a URL.
+        
+        Args:
+            url: URL to learn from
+            
+        Returns:
+            Dictionary containing learning results
+        """
+        try:
+            # Check if URL was already visited
+            if url in self.visited_urls:
+                return {
+                    'success': True,
+                    'message': 'URL already processed',
+                    'url': url
+                }
+                
+            # Add to visited URLs
+            self.visited_urls.add(url)
+            
+            # Process URL content
+            content = self._fetch_url_content(url)
+            if not content:
+                return {
+                    'success': False,
+                    'error': 'Failed to fetch content',
+                    'url': url
+                }
+                
+            # Process content
+            processed_data = self._process_content(content, url)
+            
+            # Store knowledge
+            self._store_knowledge(processed_data)
+            
+            return {
+                'success': True,
+                'url': url,
+                'processed_chunks': len(processed_data['chunks']),
+                'classifications': processed_data['classifications']
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error learning from URL {url}: {str(e)}")
+            return {
+                'success': False,
+                'error': str(e),
+                'url': url
+            }
+            
+    def _extract_content(self, url: str) -> str:
+        """Extract text content from URL."""
+        response = requests.get(url)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Remove script and style elements
+        for script in soup(["script", "style"]):
+            script.decompose()
+            
+        return soup.get_text()
+        
+    def _chunk_content(self, content: str, chunk_size: int = 1000) -> List[str]:
+        """Split content into chunks."""
+        sentences = sent_tokenize(content)
+        chunks = []
+        current_chunk = []
+        current_size = 0
+        
+        for sentence in sentences:
+            sentence_size = len(sentence)
+            if current_size + sentence_size > chunk_size and current_chunk:
+                chunks.append(" ".join(current_chunk))
+                current_chunk = []
+                current_size = 0
+                
+            current_chunk.append(sentence)
+            current_size += sentence_size
+            
+        if current_chunk:
+            chunks.append(" ".join(current_chunk))
+            
+        return chunks
+        
+    def _generate_embeddings(self, texts: List[str]) -> List[List[float]]:
+        """Generate embeddings for text chunks."""
+        embeddings = self.embeddings_model.encode(texts)
+        return embeddings.tolist()
+        
+    def query_knowledge(self, query: str, n_results: int = 5) -> List[Dict[str, Any]]:
+        """Query the knowledge base.
+        
+        Args:
+            query: Query string
+            n_results: Number of results to return
+            
+        Returns:
+            List of relevant documents with metadata
+        """
+        query_embedding = self.embeddings_model.encode([query])[0].tolist()
+        
+        results = self._search_memory_storage(query_embedding, n_results)
+        
+        return results
+            
+    def _rate_limit(self):
+        """Implement rate limiting."""
+        current_time = time.time()
+        time_since_last = current_time - self.last_request_time
+        
+        if time_since_last < self.min_request_interval:
+            time.sleep(self.min_request_interval - time_since_last)
+            
+        self.last_request_time = time.time()
+        
+    def _summarize_content(self, content: str) -> str:
+        """Summarize content using transformer model.
+        
+        Args:
+            content: Text content to summarize
+            
+        Returns:
+            Summarized text
+        """
+        try:
+            summary = self.summarizer(content, max_length=130, min_length=30)[0]["summary_text"]
+            return summary
+        except Exception as e:
+            return f"Error summarizing content: {str(e)}"
+            
+    def _categorize_content(self, content: str) -> List[str]:
+        """Categorize content using zero-shot classification.
+        
+        Args:
+            content: Text content to categorize
+            
+        Returns:
+            List of categories
+        """
+        try:
+            candidate_labels = [
+                "technology", "programming", "science",
+                "mathematics", "engineering", "business"
+            ]
+            
+            result = self.zero_shot_classifier(
+                content,
+                candidate_labels,
+                multi_label=True
+            )
+            
+            # Get labels with confidence > 0.5
+            categories = [
+                label for label, score in zip(result["labels"], result["scores"])
+                if score > 0.5
+            ]
+            
+            return categories
+        except Exception as e:
+            return [f"Error categorizing content: {str(e)}"]
+            
+    def save_to_cache(self, key: str, data: Dict[str, Any]):
+        """Save data to cache.
+        
+        Args:
+            key: Cache key
+            data: Data to cache
+        """
+        cache_file = self.cache_dir / f"{key}.json"
+        with open(cache_file, "w") as f:
+            json.dump(data, f)
+            
+    def load_from_cache(self, key: str) -> Optional[Dict[str, Any]]:
+        """Load data from cache.
+        
+        Args:
+            key: Cache key
+            
+        Returns:
+            Cached data or None if not found/expired
+        """
+        cache_file = self.cache_dir / f"{key}.json"
+        if not cache_file.exists():
+            return None
+            
+        # Check cache expiry
+        if time.time() - cache_file.stat().st_mtime > self.cache_expiry:
+            return None
+            
+        with open(cache_file, "r") as f:
+            return json.load(f)
+            
+    def close(self):
+        """Clean up resources."""
+        try:
+            self.client.persist()
+        except Exception as e:
+            print(f"Error during cleanup: {str(e)}")
+
+    def learn_from_text(self, text: str) -> Dict[str, Any]:
+        """Learn from text input.
+        
+        Args:
+            text: Text to learn from
+            
+        Returns:
+            Dictionary containing learning results
+        """
+        try:
+            # Process text
+            embeddings = self._get_embeddings(text)
+            
+            # Store in vector database
+            self._add_to_memory_storage(text, {}, embeddings)
+            
+            return {
+                "success": True,
+                "message": "Successfully learned from text"
+            }
+        except Exception as e:
+            self.logger.error(f"Error learning from text: {str(e)}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+            
+    def _fetch_url(self, url: str) -> Optional[str]:
+        """Fetch content from URL.
+        
+        Args:
+            url: URL to fetch
+            
+        Returns:
+            Content string or None if failed
+        """
+        try:
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            return response.text
+            
+        except Exception as e:
+            self.logger.error(f"Error fetching URL {url}: {str(e)}")
+            return None
+            
+    def _process_content(self, content: str, url: str) -> Dict[str, Any]:
+        """Process web content.
+        
+        Args:
+            content: Content to process
+            url: Source URL
+            
+        Returns:
+            Dictionary containing processed data
+        """
+        # Extract text chunks
+        chunks = self._extract_chunks(content)
+        
+        # Classify content
+        classifications = self._classify_content(chunks)
+        
+        # Generate embeddings
+        embeddings = self._generate_embeddings(chunks)
+        
+        return {
+            "url": url,
+            "timestamp": datetime.now().isoformat(),
+            "chunks": chunks,
+            "classifications": classifications,
+            "embeddings": embeddings
         }
-        # Initialize GitHub client (can be None if no token provided)
-        self.github_client = None
-        # Initialize dependency graph
-        self.dependency_graph = nx.DiGraph()
-        # Add caching
-        self.cache_dir = os.path.join(base_dir, 'cache')
-        os.makedirs(self.cache_dir, exist_ok=True)
-        self.cache = {}
-        self.last_request_time = 0
-        self.min_request_interval = 0.5  # Minimum time between requests in seconds
         
-        # Initialize NLP components
+    def _store_knowledge(self, data: Dict[str, Any]):
+        """Store knowledge in vector database.
+        
+        Args:
+            data: Processed data to store
+        """
         try:
-            self.nlp = spacy.load('en_core_web_sm')
-            self.sentiment_analyzer = pipeline("sentiment-analysis")
-            self.zero_shot_classifier = pipeline("zero-shot-classification")
-            self.tokenizer = AutoTokenizer.from_pretrained('sentence-transformers/all-MiniLM-L6-v2')
-            self.sentence_model = AutoModel.from_pretrained('sentence-transformers/all-MiniLM-L6-v2')
-            self.tfidf = TfidfVectorizer(max_features=1000)
-            self.logger.info("NLP components initialized successfully")
+            # Add to vector database
+            self._add_to_memory_storage(data["url"], data["metadata"], data["embeddings"])
+            
         except Exception as e:
-            self.logger.error(f"Error initializing NLP components: {str(e)}")
-            self.nlp = None
-            self.sentiment_analyzer = None
-            self.zero_shot_classifier = None
-            self.tokenizer = None
-            self.sentence_model = None
-            self.tfidf = None
+            self.logger.error(f"Error storing knowledge: {str(e)}")
+            
+    def _extract_chunks(self, content: str, chunk_size: int = 512) -> List[str]:
+        """Extract text chunks from content.
         
-        # Download required NLTK data
+        Args:
+            content: Content to chunk
+            chunk_size: Maximum chunk size
+            
+        Returns:
+            List of text chunks
+        """
+        # Simple splitting by sentences for now
+        sentences = content.split(". ")
+        chunks = []
+        current_chunk = []
+        current_size = 0
+        
+        for sentence in sentences:
+            if current_size + len(sentence) > chunk_size:
+                chunks.append(". ".join(current_chunk))
+                current_chunk = [sentence]
+                current_size = len(sentence)
+            else:
+                current_chunk.append(sentence)
+                current_size += len(sentence)
+                
+        if current_chunk:
+            chunks.append(". ".join(current_chunk))
+            
+        return chunks
+        
+    def _classify_content(self, chunks: List[str]) -> List[str]:
+        """Classify content chunks.
+        
+        Args:
+            chunks: List of text chunks
+            
+        Returns:
+            List of classifications
+        """
         try:
-            nltk.download('punkt')
-            nltk.download('stopwords')
-            nltk.download('averaged_perceptron_tagger')
-            self.stop_words = set(stopwords.words('english'))
+            # Define candidate labels
+            labels = ["technical", "scientific", "educational", "news", "other"]
+            
+            # Classify each chunk
+            classifications = []
+            for chunk in chunks:
+                result = self.classifier(chunk, labels)
+                classifications.append(result["labels"][0])
+                
+            return classifications
+            
         except Exception as e:
-            self.logger.error(f"Error downloading NLTK data: {str(e)}")
-            self.stop_words = set()
-        
-        # Priority system configuration
-        self.priority_extensions = {'py', 'md', 'txt', 'json', 'yaml', 'yml', 'toml'}
-        self.secondary_extensions = {'js', 'css', 'html', 'xml', 'csv', 'sql'}
-        self.priority_keywords = {'main', 'core', 'init', 'config', 'settings', 'setup', 'requirements'}
-        self.secondary_keywords = {'test', 'util', 'helper', 'common', 'shared'}
-        self.priority_locations = {'src/', 'core/', 'main/', 'config/', 'setup/'}
-        self.secondary_locations = {'tests/', 'utils/', 'helpers/', 'common/'}
-        
-        # Load existing learning data
-        self._load_learning_data()
-        
-    def _get_file_priority(self, file_path: str) -> int:
-        """Calculate priority for file processing"""
-        if not file_path:
-            return 0
+            self.logger.error(f"Error classifying content: {str(e)}")
+            return ["unknown"] * len(chunks)
             
-        priority = 0
+    def _load_visited_urls(self):
+        """Load visited URLs from file."""
+        urls_file = self.cache_dir / "visited_urls.json"
+        if urls_file.exists():
+            try:
+                with open(urls_file, "r") as f:
+                    self.visited_urls = set(json.load(f))
+            except Exception as e:
+                self.logger.error(f"Error loading visited URLs: {str(e)}")
+                self.visited_urls = set()
+                
+    def _save_visited_urls(self):
+        """Save visited URLs to file."""
+        urls_file = self.cache_dir / "visited_urls.json"
+        try:
+            with open(urls_file, "w") as f:
+                json.dump(list(self.visited_urls), f)
+        except Exception as e:
+            self.logger.error(f"Error saving visited URLs: {str(e)}")
+            
+    def _init_quantum_components(self):
+        """Initialize quantum-inspired neural components."""
+        try:
+            # Initialize quantum-inspired neural network
+            self.qinn = qinn.QuantumInspiredNN(
+                input_size=768,  # BERT embedding size
+                hidden_size=1024,
+                num_layers=3,
+                num_qubits=4  # Number of quantum-inspired qubits
+            )
+            
+            # Initialize superposition processor
+            self.superposition_processor = qinn.SuperpositionProcessor(
+                num_states=8,  # Number of parallel states
+                entanglement_strength=0.5
+            )
+            
+            # Initialize quantum tunneling
+            self.quantum_tunneling = qinn.QuantumTunneling(
+                barrier_height=0.3
+            )
+            
+            self.logger.info("Quantum-inspired components initialized successfully")
+        except Exception as e:
+            self.logger.error(f"Error initializing quantum components: {str(e)}")
+            self.qinn = None
+            self.superposition_processor = None
+            self.quantum_tunneling = None
+            
+    def _save_to_cache(self, key: str, data: dict, timestamp: datetime = None) -> str:
+        """Save data to cache with timestamp."""
+        try:
+            timestamp = timestamp or datetime.now()
+            cache_data = {
+                'timestamp': timestamp.isoformat(),
+                'data': self._convert_numpy_to_list(data)
+            }
+            
+            cache_file = os.path.join(self.cache_dir, f"{key}.json")
+            with open(cache_file, 'w') as f:
+                json.dump(cache_data, f)
+                
+            self.logger.info(f"Data saved to cache: {cache_file}")
+            return cache_file
+        except Exception as e:
+            self.logger.error(f"Error saving to cache: {str(e)}")
+            return None
+            
+    def _get_from_cache(self, key: str) -> Optional[dict]:
+        """Get data from cache if not expired."""
+        try:
+            cache_file = os.path.join(self.cache_dir, f"{key}.json")
+            if not os.path.exists(cache_file):
+                return None
+                
+            with open(cache_file, 'r') as f:
+                cache_data = json.load(f)
+                
+            timestamp = datetime.fromisoformat(cache_data['timestamp'])
+            if (datetime.now() - timestamp).total_seconds() > self.cache_expiry:
+                self.logger.info(f"Cache expired for {key}")
+                return None
+                
+            return cache_data
+        except Exception as e:
+            self.logger.error(f"Error reading from cache: {str(e)}")
+            return None
+            
+    def _convert_numpy_to_list(self, obj):
+        """Convert numpy arrays to lists for JSON serialization."""
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, dict):
+            return {key: self._convert_numpy_to_list(value) for key, value in obj.items()}
+        elif isinstance(obj, list):
+            return [self._convert_numpy_to_list(item) for item in obj]
+        return obj
         
-        # Check file extension
-        ext = file_path.lower().split('.')[-1]
-        
-        # Special case for high-priority files (case-insensitive)
-        filename = file_path.lower().split('/')[-1]
-        if filename in {'requirements.txt', 'setup.py', 'readme.md'}:
-            return 100
+    def _extract_code_patterns(self, directory: str):
+        """Extract code patterns from files in directory."""
+        patterns = []
+        for root, _, files in os.walk(directory):
+            for file in files:
+                if file.endswith(('.py', '.js', '.java', '.cpp')):
+                    file_path = os.path.join(root, file)
+                    try:
+                        with open(file_path, 'r') as f:
+                            content = f.read()
+                            # Add your pattern extraction logic here
+                            patterns.append({
+                                'file': file_path,
+                                'content': content
+                            })
+                    except Exception as e:
+                        self.logger.error(f"Error processing file {file_path}: {str(e)}")
+                        
+        with open(os.path.join(directory, 'patterns.json'), 'w') as f:
+            json.dump(patterns, f)
             
-        # Special case for src/test.py
-        if filename == 'test.py' and 'src/' in file_path.lower():
-            return 110
-            
-        # Special case for docs/api.md
-        if filename == 'api.md' and 'docs/' in file_path.lower():
-            return 30
-            
-        if ext in self.priority_extensions:
-            priority += 50
-        elif ext in self.secondary_extensions:
-            priority += 30
-            
-        # Check file name
-        base_name = filename.split('.')[0]
-        if any(keyword in base_name for keyword in self.priority_keywords):
-            priority += 40
-        elif any(keyword in base_name for keyword in self.secondary_keywords):
-            priority += 20
-            
-        # Check file location
-        if any(loc in file_path.lower() for loc in self.priority_locations):
-            priority += 40
-        elif any(loc in file_path.lower() for loc in self.secondary_locations):
-            priority += 20
-            
-        return priority
-        
-    def set_github_token(self, token: str):
-        """Set GitHub token for API access"""
-        if not token:
-            self.clear_github_token()
-            return
-            
-        self.github_client = Github(token)
-        self.headers['Authorization'] = f'token {token}'
-        
-    def clear_github_token(self):
-        """Clear GitHub token and reset client"""
-        self.github_client = None
-        if 'Authorization' in self.headers:
-            del self.headers['Authorization']
-        
+    def _generate_examples(self, directory: str):
+        """Generate examples from collected data."""
+        examples = []
+        for root, _, files in os.walk(directory):
+            for file in files:
+                if file.endswith('.json'):
+                    file_path = os.path.join(root, file)
+                    try:
+                        with open(file_path, 'r') as f:
+                            data = json.load(f)
+                            # Add your example generation logic here
+                            examples.append(data)
+                    except Exception as e:
+                        self.logger.error(f"Error processing file {file_path}: {str(e)}")
+                        
+        with open(os.path.join(directory, 'generated_examples.json'), 'w') as f:
+            json.dump(examples, f)
+
     def _analyze_file_content(self, content: str, file_type: str) -> Dict[str, Any]:
         """Analyze file content to extract metadata using advanced NLP"""
         analysis = {
@@ -296,70 +785,6 @@ class WebLearningSystem:
                         if imp in other_file.get('analysis', {}).get('functions', []):
                             self.dependency_graph.add_edge(file_path, other_file['path'])
                             
-    def _get_from_cache(self, key: str) -> Optional[Dict[str, Any]]:
-        """Get data from cache if not expired"""
-        if not os.path.exists(self.cache_dir):
-            return None
-            
-        cache_file = os.path.join(self.cache_dir, f"{key}.json")
-        if not os.path.exists(cache_file):
-            return None
-            
-        try:
-            with open(cache_file, 'r', encoding='utf-8') as f:
-                cached_data = json.load(f)
-                
-            # Check cache expiration
-            timestamp = datetime.fromisoformat(cached_data.get('timestamp', ''))
-            if (datetime.now() - timestamp).total_seconds() > self.cache_expiry:
-                return None
-                
-            return cached_data
-        except Exception as e:
-            self.logger.warning(f"Error reading from cache: {str(e)}")
-            return None
-            
-    def _save_to_cache(self, key: str, data: Dict[str, Any]) -> None:
-        """Save data to cache with timestamp"""
-        if not os.path.exists(self.cache_dir):
-            os.makedirs(self.cache_dir)
-            
-        cache_file = os.path.join(self.cache_dir, f"{key}.json")
-        
-        try:
-            # Convert numpy arrays to lists for JSON serialization
-            data = self._convert_numpy_to_list(data)
-            
-            # Add timestamp if not present
-            if 'timestamp' not in data:
-                data['timestamp'] = datetime.now().isoformat()
-                
-            with open(cache_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2)
-        except Exception as e:
-            self.logger.warning(f"Error saving to cache: {str(e)}")
-            
-    def _convert_numpy_to_list(self, data: Any) -> Any:
-        """Convert numpy arrays to lists for JSON serialization"""
-        if isinstance(data, dict):
-            return {k: self._convert_numpy_to_list(v) for k, v in data.items()}
-        elif isinstance(data, list):
-            return [self._convert_numpy_to_list(item) for item in data]
-        elif 'numpy' in str(type(data)):
-            return data.tolist()
-        return data
-        
-    def _rate_limit(self):
-        """Implement rate limiting between requests"""
-        current_time = time.time()
-        time_since_last_request = current_time - self.last_request_time
-        
-        if time_since_last_request < self.min_request_interval:
-            sleep_time = max(0, self.min_request_interval - time_since_last_request)
-            time.sleep(sleep_time)
-        
-        self.last_request_time = current_time
-        
     def _handle_github_cache(self, repo_url: str) -> Optional[Dict[str, Any]]:
         """Handle cache specifically for GitHub repository data"""
         cache_key = f"github_{repo_url.replace('/', '_').replace('https:__github.com_', '')}"
@@ -507,29 +932,6 @@ class WebLearningSystem:
         except Exception as e:
             self.logger.error(f"Error learning from GitHub repository {repo_url}: {str(e)}")
             return {}
-            
-    def learn_from_url(self, url: str, max_depth: int = 2) -> Dict[str, Any]:
-        """Learn from a URL, with support for GitHub repositories"""
-        try:
-            # Check if it's a GitHub URL
-            if 'github.com' in url:
-                result = self.learn_from_github(url)
-            else:
-                result = self._learn_from_webpage(url, max_depth)
-            
-            # Save the learning data
-            self.learning_data.append(result)
-            self._save_learning_data()
-            
-            return result
-            
-        except Exception as e:
-            self.logger.error(f"Error learning from URL {url}: {str(e)}")
-            return {
-                'url': url,
-                'error': str(e),
-                'timestamp': datetime.now().isoformat()
-            }
             
     def _parse_github_url(self, url: str) -> tuple:
         """Parse GitHub URL to get owner and repository name"""
@@ -746,4 +1148,374 @@ class WebLearningSystem:
                 'url': url,
                 'error': str(e),
                 'timestamp': datetime.now().isoformat()
-            } 
+            }
+
+    def _analyze_content(self, content: str) -> Dict[str, Any]:
+        """Analyze content using quantum-inspired NLP components."""
+        try:
+            # Basic text cleaning
+            content = content.strip()
+            if not content:
+                return {}
+                
+            # Process with quantum-inspired components
+            if self.qinn is not None:
+                # Convert text to quantum state
+                quantum_state = self.qinn.text_to_quantum_state(content)
+                
+                # Apply superposition processing
+                parallel_states = self.superposition_processor.process(quantum_state)
+                
+                # Apply quantum tunneling for information transfer
+                processed_states = self.quantum_tunneling.transfer(parallel_states)
+                
+                # Measure quantum states
+                classical_output = self.qinn.measure_quantum_states(processed_states)
+                
+                # Extract information from classical output
+                entities = classical_output.get('entities', [])
+                sentences = classical_output.get('sentences', [])
+                sentiment = classical_output.get('sentiment', {})
+                topics = classical_output.get('topics', {})
+                
+                return {
+                    'entities': entities,
+                    'num_sentences': len(sentences),
+                    'sentiment': sentiment,
+                    'topics': topics,
+                    'quantum_metrics': {
+                        'superposition_states': len(parallel_states),
+                        'tunneling_events': self.quantum_tunneling.get_tunneling_count(),
+                        'entanglement_strength': self.superposition_processor.get_entanglement_strength()
+                    },
+                    'timestamp': time.time()
+                }
+            
+            # Fallback to classical NLP if quantum components are not available
+            return self._classical_analyze_content(content)
+            
+        except Exception as e:
+            self.logger.error(f"Error analyzing content: {str(e)}")
+            return {}
+            
+    def _classical_analyze_content(self, content: str) -> Dict[str, Any]:
+        """Classical NLP analysis as fallback."""
+        try:
+            # Tokenize and process with spaCy
+            doc = self.nlp(content[:1000000])  # Limit content size
+            
+            # Extract key information
+            entities = [(ent.text, ent.label_) for ent in doc.ents]
+            sentences = [sent.text.strip() for sent in doc.sents]
+            
+            # Get sentiment
+            sentiment = self.sentiment_analyzer(content[:1000])[0]
+            
+            # Perform zero-shot classification
+            topics = ['technology', 'programming', 'documentation', 'tutorial']
+            topic_classification = self.zero_shot_classifier(content[:1000], topics)
+            
+            return {
+                'entities': entities,
+                'num_sentences': len(sentences),
+                'sentiment': sentiment,
+                'topics': dict(zip(topic_classification['labels'], topic_classification['scores'])),
+                'timestamp': time.time()
+            }
+        except Exception as e:
+            self.logger.error(f"Error in classical analysis: {str(e)}")
+            return {}
+
+    def set_github_token(self, token: str) -> None:
+        """Set GitHub token for authentication."""
+        if not token:
+            self.github_client = None
+            self.auth_headers = {}
+            return
+            
+        try:
+            self.github_client = Github(token)
+            self.auth_headers = {
+                'Authorization': f'token {token}',
+                'Accept': 'application/vnd.github.v3+json'
+            }
+            # Test the token
+            self.github_client.get_user()
+            self.logger.info("GitHub token set successfully")
+        except Exception as e:
+            self.logger.error(f"Failed to set GitHub token: {str(e)}")
+            self.github_client = None
+            self.auth_headers = {}
+
+    def _get_cache_path(self, url: str) -> Path:
+        """Get cache file path for URL.
+        
+        Args:
+            url: URL to get cache path for
+            
+        Returns:
+            Path to cache file
+        """
+        url_hash = hashlib.md5(url.encode()).hexdigest()
+        return Path(self.cache_dir) / f"{url_hash}.json"
+    
+    def _cache_content(self, url: str, content: Dict[str, Any]):
+        """Cache web content to disk.
+        
+        Args:
+            url: URL of content
+            content: Content to cache
+        """
+        cache_path = self._get_cache_path(url)
+        with open(cache_path, "w") as f:
+            json.dump(content, f)
+    
+    def _get_cached_content(self, url: str) -> Optional[Dict[str, Any]]:
+        """Get cached content for URL.
+        
+        Args:
+            url: URL to get cached content for
+            
+        Returns:
+            Cached content if available, None otherwise
+        """
+        cache_path = self._get_cache_path(url)
+        if cache_path.exists():
+            with open(cache_path, "r") as f:
+                return json.load(f)
+        return None
+    
+    def _fetch_url(self, url: str) -> Optional[str]:
+        """Fetch content from URL.
+        
+        Args:
+            url: URL to fetch
+            
+        Returns:
+            HTML content if successful, None otherwise
+        """
+        try:
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            return response.text
+        except Exception as e:
+            print(f"Error fetching URL {url}: {str(e)}")
+            return None
+    
+    def _extract_text(self, html: str) -> str:
+        """Extract text content from HTML.
+        
+        Args:
+            html: HTML content
+            
+        Returns:
+            Extracted text
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        
+        # Remove script and style elements
+        for script in soup(["script", "style"]):
+            script.decompose()
+            
+        return soup.get_text()
+    
+    def learn_from_url(self, url: str) -> Dict[str, Any]:
+        """Learn from content at URL.
+        
+        Args:
+            url: URL to learn from
+            
+        Returns:
+            Dictionary containing learning results
+        """
+        try:
+            # Check cache first
+            cached = self._get_cached_content(url)
+            if cached:
+                return cached
+            
+            # Fetch and process content
+            html = self._fetch_url(url)
+            if not html:
+                return {"error": "Failed to fetch URL"}
+                
+            # Extract text
+            text = self._extract_text(html)
+            
+            # Store in vector database
+            self._add_to_memory_storage(text, {"url": url}, self._generate_embeddings([text])[0])
+            
+            # Prepare results
+            results = {
+                "url": url,
+                "text_length": len(text),
+                "success": True
+            }
+            
+            # Cache results
+            self._cache_content(url, results)
+            
+            return results
+            
+        except Exception as e:
+            error_result = {
+                "error": str(e),
+                "success": False
+            }
+            return error_result
+    
+    def search_similar(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """Search for similar content.
+        
+        Args:
+            query: Search query
+            limit: Maximum number of results
+            
+        Returns:
+            List of similar content items
+        """
+        try:
+            query_embedding = self._generate_embeddings([query])[0]
+            results = self._search_memory_storage(query_embedding, limit)
+            
+            formatted_results = []
+            for result in results:
+                formatted_results.append({
+                    "text": result['text'],
+                    "url": result['metadata']['url'],
+                    "score": result['similarity']
+                })
+                
+            return formatted_results
+            
+        except Exception as e:
+            print(f"Error searching similar content: {str(e)}")
+            return [] 
+
+    def _get_embeddings(self, text: str) -> List[float]:
+        """Generate embeddings for text using a transformer model.
+        
+        Args:
+            text: Text to generate embeddings for
+            
+        Returns:
+            List of embedding values
+        """
+        try:
+            # Truncate text if too long
+            max_length = 512
+            if len(text.split()) > max_length:
+                text = ' '.join(text.split()[:max_length])
+            
+            # Get embeddings from model
+            inputs = self.tokenizer(text, return_tensors="pt", padding=True, truncation=True)
+            with torch.no_grad():
+                outputs = self.model(**inputs)
+                # Use CLS token embedding
+                embeddings = outputs.last_hidden_state[:, 0, :].numpy()
+            
+            return embeddings[0].tolist()
+            
+        except Exception as e:
+            self.logger.error(f"Error generating embeddings: {str(e)}")
+            return [0.0] * 768  # Return zero vector as fallback 
+
+    def process_url(self, url: str) -> Dict[str, Any]:
+        """Process content from a URL.
+        
+        Args:
+            url: URL to process
+            
+        Returns:
+            Dictionary containing processed content and metadata
+        """
+        try:
+            # Check if URL has been visited
+            if url in self.visited_urls:
+                return {"status": "skipped", "reason": "already_visited"}
+                
+            # Rate limiting
+            self._rate_limit()
+            
+            # Fetch content
+            content = self._fetch_url(url)
+            if not content:
+                return {"status": "error", "reason": "fetch_failed"}
+                
+            # Process content
+            result = self._process_content(content, url)
+            
+            # Mark URL as visited
+            self.visited_urls.add(url)
+            self._save_visited_urls()
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Error processing URL {url}: {str(e)}")
+            return {"status": "error", "reason": str(e)} 
+
+    def extract_code_patterns(self, content: str) -> List[Dict[str, Any]]:
+        """Extract code patterns from content.
+        
+        Args:
+            content: Content to analyze
+            
+        Returns:
+            List of extracted code patterns
+        """
+        try:
+            # Split content into lines
+            lines = content.split('\n')
+            patterns = []
+            
+            # Look for common code patterns
+            for i, line in enumerate(lines):
+                # Function definitions
+                if re.match(r'def\s+\w+\s*\(', line):
+                    patterns.append({
+                        'type': 'function',
+                        'line': i + 1,
+                        'content': line.strip(),
+                        'context': lines[max(0, i-2):min(len(lines), i+3)]
+                    })
+                    
+                # Class definitions
+                elif re.match(r'class\s+\w+', line):
+                    patterns.append({
+                        'type': 'class',
+                        'line': i + 1,
+                        'content': line.strip(),
+                        'context': lines[max(0, i-2):min(len(lines), i+3)]
+                    })
+                    
+                # Import statements
+                elif re.match(r'import\s+\w+', line) or re.match(r'from\s+\w+\s+import', line):
+                    patterns.append({
+                        'type': 'import',
+                        'line': i + 1,
+                        'content': line.strip(),
+                        'context': lines[max(0, i-2):min(len(lines), i+3)]
+                    })
+                    
+            return patterns
+            
+        except Exception as e:
+            self.logger.error(f"Error extracting code patterns: {str(e)}")
+            return []
+                    })
+                    
+                # Import statements
+                elif re.match(r'import\s+\w+', line) or re.match(r'from\s+\w+\s+import', line):
+                    patterns.append({
+                        'type': 'import',
+                        'line': i + 1,
+                        'content': line.strip(),
+                        'context': lines[max(0, i-2):min(len(lines), i+3)]
+                    })
+                    
+            return patterns
+            
+        except Exception as e:
+            self.logger.error(f"Error extracting code patterns: {str(e)}")
+            return [] 
