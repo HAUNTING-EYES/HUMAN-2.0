@@ -74,10 +74,12 @@ test_adaptation_state.pt
 test_contagion_state.pt
 test_regulation_state.pt
 
+# Old auto-generated snapshots
+ai_versions/
+history/
+
 # Keep these directories
 !AutoGPT/
 !babyagi/
 !BRAIN/
 !brainstem/
-!history/
-!ai_versions/
