@@ -77,6 +77,8 @@ test_regulation_state.pt
 # Old auto-generated snapshots
 ai_versions/
 history/
+*.backup
+backups/
 
 # Keep these directories
 !AutoGPT/
