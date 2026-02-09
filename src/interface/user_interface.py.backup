@@ -1,0 +1,595 @@
+#!/usr/bin/env python3
+"""User interface for HUMAN 2.0."""
+
+import os
+import json
+import logging
+import argparse
+from pathlib import Path
+from typing import Dict, List, Optional, Any
+import time
+import random
+import numpy as np
+
+class UserInterface:
+    """Command-line interface for HUMAN 2.0."""
+    
+    def __init__(self, base_dir: Optional[str] = None):
+        """Initialize the user interface.
+        
+        Args:
+            base_dir: Base directory for data storage. If None, uses current directory.
+        """
+        self.base_dir = Path(base_dir) if base_dir else Path.cwd()
+        self.config_dir = self.base_dir / 'config'
+        self.log_dir = self.base_dir / 'logs'
+        self.data_dir = self.base_dir / 'data'
+        
+        # Create necessary directories
+        for directory in [self.config_dir, self.log_dir, self.data_dir]:
+            directory.mkdir(parents=True, exist_ok=True)
+            
+        # Set up logging
+        self._setup_logging()
+        
+        # Load configuration
+        self.config = self._load_config()
+        
+        # Initialize command history
+        self.history: List[str] = []
+        
+        # Set up argument parser
+        self.parser = self._setup_parser()
+        
+        # Initialize emotional systems
+        self._initialize_emotional_systems()
+        
+    def _setup_logging(self) -> None:
+        """Set up logging configuration."""
+        log_file = self.log_dir / 'interface.log'
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler(log_file),
+                logging.StreamHandler()
+            ]
+        )
+        self.logger = logging.getLogger('UserInterface')
+        
+    def _load_config(self) -> Dict[str, Any]:
+        """Load interface configuration."""
+        config_file = self.config_dir / 'config.json'
+        if config_file.exists():
+            with open(config_file) as f:
+                return json.load(f)
+        return self._create_default_config()
+        
+    def _create_default_config(self) -> Dict[str, Any]:
+        """Create default configuration."""
+        config = {
+            'theme': 'light',
+            'max_history': 1000,
+            'auto_save': True,
+            'api_endpoints': {
+                'brainstem': 'http://localhost:8000',
+                'cerebellum': 'http://localhost:8001',
+                'cortex': 'http://localhost:8002',
+                'hippocampus': 'http://localhost:8003',
+                'thalamus': 'http://localhost:8004'
+            },
+            'emotional_responses': True,
+            'chat_mode': True,
+            'personality': 'friendly'
+        }
+        self._save_config(config)
+        return config
+        
+    def _save_config(self, config: Dict[str, Any]) -> None:
+        """Save interface configuration."""
+        config_file = self.config_dir / 'config.json'
+        with open(config_file, 'w') as f:
+            json.dump(config, f, indent=4)
+            
+    def _initialize_emotional_systems(self) -> None:
+        """Initialize emotional memory and learning systems."""
+        try:
+            # Import emotional components
+            from components.emotional_memory import EmotionalMemory
+            from components.emotional_learning import EmotionalLearningSystem
+            
+            # Initialize emotional memory
+            self.emotional_memory = EmotionalMemory(str(self.data_dir / 'emotional_memory'))
+            self.logger.info("Initialized EmotionalMemory component")
+            
+            # Initialize emotional learning
+            self.emotional_learning = EmotionalLearningSystem(
+                state_size=768,
+                action_size=8,
+                learning_rate=0.001,
+                base_dir=self.data_dir / 'emotional_learning'
+            )
+            self.logger.info("Initialized EmotionalLearningSystem component")
+            
+            # Set initial emotional state
+            self.current_emotional_state = self.emotional_memory.get_current_state()
+            
+        except Exception as e:
+            self.logger.error(f"Error initializing emotional systems: {e}")
+            print(f"Warning: Could not initialize emotional systems: {e}")
+            self.emotional_memory = None
+            self.emotional_learning = None
+            self.current_emotional_state = {}
+            
+    def _setup_parser(self) -> argparse.ArgumentParser:
+        """Set up command-line argument parser."""
+        parser = argparse.ArgumentParser(description='HUMAN 2.0 Interface')
+        subparsers = parser.add_subparsers(dest='command', help='Available commands')
+        
+        # Learn command
+        learn_parser = subparsers.add_parser('learn', help='Learn from various sources')
+        learn_parser.add_argument('source', help='Source to learn from')
+        learn_parser.add_argument('--type', choices=['document', 'repo', 'url'], required=True)
+        learn_parser.add_argument('--format', choices=['text', 'code', 'json'], required=True)
+        
+        # Analyze command
+        analyze_parser = subparsers.add_parser('analyze', help='Analyze information or code')
+        analyze_parser.add_argument('input', help='Input to analyze')
+        analyze_parser.add_argument('--type', choices=['code', 'text', 'data'], required=True)
+        analyze_parser.add_argument('--depth', choices=['basic', 'detailed', 'comprehensive'], required=True)
+        
+        # Improve command
+        improve_parser = subparsers.add_parser('improve', help='Improve system capabilities')
+        improve_parser.add_argument('component', help='Component to improve')
+        improve_parser.add_argument('--aspect', choices=['performance', 'accuracy', 'efficiency'], required=True)
+        improve_parser.add_argument('--target', help='Target metric for improvement', required=True)
+        
+        # Test command
+        test_parser = subparsers.add_parser('test', help='Run system tests')
+        test_parser.add_argument('component', help='Component to test')
+        test_parser.add_argument('--type', choices=['unit', 'integration', 'system'], required=True)
+        test_parser.add_argument('--scope', choices=['all', 'specific'], required=True)
+        
+        # Share command
+        share_parser = subparsers.add_parser('share', help='Share information with the system')
+        share_parser.add_argument('content', help='Content to share')
+        share_parser.add_argument('--type', choices=['knowledge', 'experience', 'feedback'], required=True)
+        share_parser.add_argument('--format', choices=['text', 'code', 'data'], required=True)
+        
+        # Emotion command
+        emotion_parser = subparsers.add_parser('emotion', help='Interact emotionally with the system')
+        emotion_parser.add_argument('action', choices=['express', 'respond', 'learn', 'chat', 'status', 'personality'])
+        emotion_parser.add_argument('--type', help='Emotion type')
+        emotion_parser.add_argument('--intensity', choices=['low', 'medium', 'high'])
+        emotion_parser.add_argument('--message', help='Message for chat mode')
+        
+        # Config command
+        config_parser = subparsers.add_parser('config', help='Manage interface configuration')
+        config_parser.add_argument('action', choices=['get', 'set'])
+        config_parser.add_argument('key', help='Configuration key')
+        config_parser.add_argument('value', nargs='?', help='Configuration value (required for set)')
+        
+        # Help command
+        help_parser = subparsers.add_parser('help', help='Display command information')
+        help_parser.add_argument('command', nargs='?', help='Command to get help for')
+        
+        return parser
+        
+    def run_interactive(self) -> None:
+        """Run the interface in interactive mode."""
+        print("Welcome to HUMAN 2.0 Interface")
+        print("Type 'help' for available commands or 'exit' to quit")
+        
+        # Check if chat mode is enabled
+        if self.config.get('chat_mode', True):
+            print("\nChat mode is enabled. You can talk directly to HUMAN 2.0.")
+            print("Type 'exit' to quit chat mode or 'commands' to switch to command mode.")
+            
+            # Run chat mode
+            self._run_chat_mode()
+            return
+        
+        while True:
+            try:
+                command = input("\nHUMAN 2.0> ").strip()
+                if command.lower() == 'exit':
+                    break
+                    
+                if not command:
+                    continue
+                    
+                # Add to history
+                self.history.append(command)
+                if len(self.history) > self.config['max_history']:
+                    self.history.pop(0)
+                    
+                # Parse command manually
+                parts = command.split()
+                cmd = parts[0].lower()
+                
+                # Handle help command
+                if cmd == 'help':
+                    if len(parts) > 1:
+                        self._handle_help_interactive(parts[1])
+                    else:
+                        print(self.parser.format_help())
+                    continue
+                
+                # Handle emotion command
+                if cmd == 'emotion':
+                    if len(parts) < 2:
+                        print("Error: Missing action. Usage: emotion <action> [options]")
+                        continue
+                        
+                    action = parts[1]
+                    if action not in ['express', 'respond', 'learn', 'chat', 'status', 'personality']:
+                        print(f"Error: Invalid action '{action}'. Must be one of: express, respond, learn, chat, status, personality")
+                        continue
+                        
+                    # Parse options
+                    emotion_type = None
+                    intensity = None
+                    message = None
+                    
+                    i = 2
+                    while i < len(parts):
+                        if parts[i] == '--type' and i + 1 < len(parts):
+                            emotion_type = parts[i + 1]
+                            i += 2
+                        elif parts[i] == '--intensity' and i + 1 < len(parts):
+                            intensity = parts[i + 1]
+                            if intensity not in ['low', 'medium', 'high']:
+                                print(f"Error: Invalid intensity '{intensity}'. Must be one of: low, medium, high")
+                                break
+                            i += 2
+                        elif parts[i] == '--message' and i + 1 < len(parts):
+                            message = parts[i + 1]
+                            i += 2
+                        else:
+                            i += 1
+                    
+                    # Create a namespace object to mimic argparse
+                    class Args:
+                        pass
+                    
+                    args = Args()
+                    args.command = 'emotion'
+                    args.action = action
+                    args.type = emotion_type
+                    args.intensity = intensity
+                    args.message = message
+                    
+                    self._handle_emotion(args)
+                    continue
+                
+                # Handle config command
+                if cmd == 'config':
+                    if len(parts) < 2:
+                        print("Error: Missing action. Usage: config <get|set> <key> [value]")
+                        continue
+                        
+                    action = parts[1]
+                    if action not in ['get', 'set']:
+                        print(f"Error: Invalid action '{action}'. Must be one of: get, set")
+                        continue
+                        
+                    if len(parts) < 3:
+                        print("Error: Missing key. Usage: config <get|set> <key> [value]")
+                        continue
+                        
+                    key = parts[2]
+                    value = parts[3] if len(parts) > 3 and action == 'set' else None
+                    
+                    if action == 'set' and not value:
+                        print("Error: Missing value for 'set' action")
+                        continue
+                    
+                    # Create a namespace object to mimic argparse
+                    class Args:
+                        pass
+                    
+                    args = Args()
+                    args.command = 'config'
+                    args.action = action
+                    args.key = key
+                    args.value = value
+                    
+                    self._handle_config(args)
+                    continue
+                
+                # Handle chat command
+                if cmd == 'chat':
+                    self._run_chat_mode()
+                    continue
+                
+                # Check if command is valid
+                valid_commands = ['learn', 'analyze', 'improve', 'test', 'share', 'emotion', 'config', 'help', 'chat']
+                if cmd not in valid_commands:
+                    print(f"Unknown command '{cmd}'. Type 'help' for available commands.")
+                    continue
+                
+                # For other commands, use the argument parser
+                try:
+                    args = self.parser.parse_args(parts)
+                    if args.command:
+                        self._execute_command(args)
+                    else:
+                        print("Unknown command. Type 'help' for available commands.")
+                except SystemExit:
+                    # Argument parser exits on error, but we want to continue
+                    pass
+                    
+            except KeyboardInterrupt:
+                print("\nExiting...")
+                break
+            except Exception as e:
+                self.logger.error(f"Error executing command: {e}")
+                print(f"Error: {e}")
+                
+    def _run_chat_mode(self) -> None:
+        """Run the interface in chat mode."""
+        print("\nEntering chat mode. Type 'exit' to quit or 'commands' to switch to command mode.")
+        
+        # Get personality profile
+        if self.emotional_memory:
+            personality = self.emotional_memory.get_personality_profile()
+            emotional_style = personality.get('emotional_style', {})
+            expressiveness = emotional_style.get('expressiveness', 0.5)
+            empathy = emotional_style.get('empathy', 0.5)
+            
+            print(f"\nHUMAN 2.0: Hello! I'm feeling expressive ({expressiveness:.2f}) and empathetic ({empathy:.2f}) today.")
+            print(f"My personality traits: {', '.join([f'{k}: {v:.2f}' for k, v in personality['traits'].items()])}")
+        else:
+            print("\nHUMAN 2.0: Hello! I'm ready to chat with you.")
+        
+        while True:
+            try:
+                user_input = input("\nYou> ").strip()
+                
+                if not user_input:
+                    continue
+                    
+                if user_input.lower() == 'exit':
+                    print("HUMAN 2.0: Goodbye! It was nice talking to you.")
+                    break
+                    
+                if user_input.lower() == 'commands':
+                    print("HUMAN 2.0: Switching to command mode.")
+                    break
+                
+                # Process the input through emotional systems
+                response = self._process_chat_input(user_input)
+                
+                # Display the response
+                print(f"\nHUMAN 2.0: {response}")
+                
+                # Add to history
+                self.history.append(f"chat: {user_input}")
+                if len(self.history) > self.config['max_history']:
+                    self.history.pop(0)
+                    
+            except KeyboardInterrupt:
+                print("\nHUMAN 2.0: Goodbye! It was nice talking to you.")
+                break
+            except Exception as e:
+                self.logger.error(f"Error in chat mode: {e}")
+                print(f"Error: {e}")
+                
+    def _process_chat_input(self, user_input: str) -> str:
+        """Process user input in chat mode and generate a response."""
+        if not self.emotional_memory:
+            return "I'm sorry, but my emotional systems are not available right now."
+            
+        try:
+            # Process the interaction through emotional memory
+            result = self.emotional_memory.process_interaction(user_input)
+            
+            # Get the emotional response
+            response = result.get('response', "I'm not sure how to respond to that.")
+            
+            # Update emotional state
+            self.current_emotional_state = result.get('state', self.current_emotional_state)
+            
+            # Learn from the interaction if emotional learning is available
+            if self.emotional_learning:
+                # Get current and next emotional states
+                current_state = np.array(list(self.current_emotional_state.values()))
+                next_state = np.array(list(result.get('state', self.current_emotional_state).values()))
+                
+                # Create interaction data
+                interaction_data = {
+                    'emotional_state': current_state,
+                    'next_emotional_state': next_state,
+                    'response_index': 0,  # Default response index
+                    'response_appropriateness': 0.7,  # Default appropriateness
+                    'emotional_stability': 0.6,  # Default stability
+                    'empathy_effectiveness': 0.7,  # Default empathy
+                    'emotional_intensity': 0.5,  # Default intensity
+                    'personality_consistency': 0.8  # Default consistency
+                }
+                
+                # Learn from the interaction
+                self.emotional_learning.learn_from_interaction(interaction_data)
+                
+            return response
+            
+        except Exception as e:
+            self.logger.error(f"Error processing chat input: {e}")
+            return f"I encountered an error while processing your input: {e}"
+                
+    def _handle_help_interactive(self, command: str) -> None:
+        """Handle help command in interactive mode."""
+        if command in ['learn', 'analyze', 'improve', 'test', 'share', 'emotion', 'config', 'chat']:
+            # Show help for specific command
+            help_text = self.parser.format_help()
+            command_help = help_text[help_text.find(command):].split('\n\n')[0]
+            print(command_help)
+        else:
+            print(f"Unknown command '{command}'. Type 'help' for available commands.")
+        
+    def _execute_command(self, args: argparse.Namespace) -> None:
+        """Execute a command based on parsed arguments."""
+        try:
+            if args.command == 'learn':
+                self._handle_learn(args)
+            elif args.command == 'analyze':
+                self._handle_analyze(args)
+            elif args.command == 'improve':
+                self._handle_improve(args)
+            elif args.command == 'test':
+                self._handle_test(args)
+            elif args.command == 'share':
+                self._handle_share(args)
+            elif args.command == 'emotion':
+                self._handle_emotion(args)
+            elif args.command == 'config':
+                self._handle_config(args)
+            elif args.command == 'help':
+                self._handle_help(args)
+                
+        except Exception as e:
+            self.logger.error(f"Error in {args.command} command: {e}")
+            print(f"Error: {e}")
+            
+    def _handle_learn(self, args: argparse.Namespace) -> None:
+        """Handle learn command."""
+        print(f"Learning from {args.source} ({args.type}, {args.format})")
+        # TODO: Implement learning logic
+        
+    def _handle_analyze(self, args: argparse.Namespace) -> None:
+        """Handle analyze command."""
+        print(f"Analyzing {args.input} ({args.type}, {args.depth})")
+        # TODO: Implement analysis logic
+        
+    def _handle_improve(self, args: argparse.Namespace) -> None:
+        """Handle improve command."""
+        print(f"Improving {args.component} ({args.aspect}, target: {args.target})")
+        # TODO: Implement improvement logic
+        
+    def _handle_test(self, args: argparse.Namespace) -> None:
+        """Handle test command."""
+        print(f"Testing {args.component} ({args.type}, scope: {args.scope})")
+        # TODO: Implement testing logic
+        
+    def _handle_share(self, args: argparse.Namespace) -> None:
+        """Handle share command."""
+        print(f"Sharing {args.content} ({args.type}, {args.format})")
+        # TODO: Implement sharing logic
+        
+    def _handle_emotion(self, args: argparse.Namespace) -> None:
+        """Handle emotion command."""
+        try:
+            # Check if emotional memory is available
+            if not self.emotional_memory:
+                print("Error: Emotional memory system is not available.")
+                return
+                
+            # Check if required parameters are provided
+            if args.action in ['express', 'respond', 'learn']:
+                if not args.type:
+                    print("Error: Emotion type is required. Use --type to specify an emotion type.")
+                    return
+                    
+                if not args.intensity:
+                    print("Error: Emotion intensity is required. Use --intensity to specify intensity (low, medium, high).")
+                    return
+            
+            # Process the emotion command based on action
+            if args.action == 'express':
+                # Express an emotion
+                result = self.emotional_memory.process_interaction(f"Expressing {args.type} emotion with {args.intensity} intensity")
+                print(f"Emotional state: {result['emotional_state']}")
+                print(f"Response: {result['emotional_response']}")
+                
+            elif args.action == 'respond':
+                # Respond to an emotion
+                result = self.emotional_memory.simulate_empathy(args.type)
+                print(f"Empathetic response: {result}")
+                
+            elif args.action == 'learn':
+                # Learn from an emotional experience
+                experience = f"Learning about {args.type} emotion with {args.intensity} intensity"
+                result = self.emotional_memory.process_interaction(experience)
+                print(f"Learned from experience: {experience}")
+                print(f"Updated emotional state: {result['emotional_state']}")
+                
+            elif args.action == 'chat':
+                # Enter chat mode
+                self._run_chat_mode()
+                
+            elif args.action == 'status':
+                # Display current emotional status
+                state = self.emotional_memory.get_current_state()
+                print("Current emotional state:")
+                for dimension, value in state.items():
+                    print(f"  {dimension}: {value:.2f}")
+                    
+                # Get personality profile
+                personality = self.emotional_memory.get_personality_profile()
+                print("\nPersonality profile:")
+                print(f"  Current mood: {personality['current_mood']}")
+                print("  Traits:")
+                for trait, value in personality['traits'].items():
+                    print(f"    {trait}: {value:.2f}")
+                    
+                # Get emotional patterns
+                patterns = self.emotional_memory.detect_emotional_patterns()
+                if patterns:
+                    print("\nEmotional patterns detected:")
+                    for pattern in patterns:
+                        print(f"  {pattern['pattern_type']}: {pattern['confidence']:.2f}")
+                        
+            elif args.action == 'personality':
+                # Display personality profile
+                personality = self.emotional_memory.get_personality_profile()
+                print("Personality profile:")
+                print(f"  Current mood: {personality['current_mood']}")
+                print("  Traits:")
+                for trait, value in personality['traits'].items():
+                    print(f"    {trait}: {value:.2f}")
+                    
+                # Get emotional patterns
+                patterns = self.emotional_memory.detect_emotional_patterns()
+                if patterns:
+                    print("\nEmotional patterns detected:")
+                    for pattern in patterns:
+                        print(f"  {pattern['pattern_type']}: {pattern['confidence']:.2f}")
+                
+            # Get emotional emergence patterns
+            emergence = self.emotional_memory.get_emotional_emergence()
+            if emergence['emergence_detected']:
+                print(f"\nEmotional emergence detected: {emergence['emergence_type']}")
+                print(f"Stability: {emergence['emotional_stability']:.2f}")
+                print(f"Adaptation: {emergence['emotional_adaptation']:.2f}")
+                print(f"Resilience: {emergence['emotional_resilience']:.2f}")
+                
+        except Exception as e:
+            self.logger.error(f"Error in emotion command: {e}")
+            print(f"Error processing emotion: {e}")
+        
+    def _handle_config(self, args: argparse.Namespace) -> None:
+        """Handle config command."""
+        if args.action == 'get':
+            value = self.config.get(args.key)
+            if value is not None:
+                print(f"{args.key}: {value}")
+            else:
+                print(f"Configuration key '{args.key}' not found")
+        elif args.action == 'set':
+            if args.value is None:
+                print("Error: Value required for 'set' action")
+                return
+            self.config[args.key] = args.value
+            self._save_config(self.config)
+            print(f"Set {args.key} to {args.value}")
+            
+    def _handle_help(self, args: argparse.Namespace) -> None:
+        """Handle help command."""
+        if args.command:
+            # Show help for specific command
+            help_text = self.parser.format_help()
+            command_help = help_text[help_text.find(args.command):].split('\n\n')[0]
+            print(command_help)
+        else:
+            # Show general help
+            print(self.parser.format_help()) 

@@ -1,0 +1,828 @@
+#!/usr/bin/env python3
+"""
+Visual Emotion Recognition Model
+CNN + LSTM architecture for video-based emotion recognition
+Optimized to match the successful audio emotion recognition system
+"""
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torchvision import models
+import numpy as np
+from typing import Dict, List, Tuple, Optional
+import logging
+
+logger = logging.getLogger(__name__)
+
+class VisualEmotionModel(nn.Module):
+    """Visual emotion recognition model using CNN + LSTM architecture"""
+    
+    def __init__(self, 
+                 num_classes: int = 7,
+                 max_frames: int = 30,
+                 feature_dim: int = 512,
+                 hidden_dim: int = 256,
+                 num_layers: int = 2,
+                 dropout: float = 0.5,
+                 pretrained: bool = True):
+        """
+        Args:
+            num_classes: Number of emotion classes
+            max_frames: Maximum number of frames per video
+            feature_dim: Dimension of CNN features
+            hidden_dim: LSTM hidden dimension
+            num_layers: Number of LSTM layers
+            dropout: Dropout rate
+            pretrained: Use pretrained CNN backbone
+        """
+        super(VisualEmotionModel, self).__init__()
+        
+        self.num_classes = num_classes
+        self.max_frames = max_frames
+        self.feature_dim = feature_dim
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        
+        # CNN backbone (ResNet-18) - matches audio system approach
+        self.cnn_backbone = models.resnet18(pretrained=pretrained)
+        # Remove the final classification layer
+        self.cnn_backbone = nn.Sequential(*list(self.cnn_backbone.children())[:-1])
+        
+        # LSTM for temporal modeling - similar to audio system
+        self.lstm = nn.LSTM(
+            input_size=feature_dim,
+            hidden_size=hidden_dim,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0,
+            bidirectional=True
+        )
+        
+        # Attention mechanism for frame importance
+        self.frame_attention = nn.MultiheadAttention(
+            embed_dim=hidden_dim * 2,  # Bidirectional
+            num_heads=8,
+            dropout=dropout,
+            batch_first=True
+        )
+        
+        # Classification layers - similar structure to audio system
+        self.classifier = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim // 2, num_classes)
+        )
+        
+        # Frame-level classifier for detailed analysis
+        self.frame_classifier = nn.Sequential(
+            nn.Linear(feature_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, num_classes)
+        )
+        
+        # Initialize weights
+        self._initialize_weights()
+        
+        logger.info(f"Initialized VisualEmotionModel with {num_classes} classes, {max_frames} max frames")
+    
+    def _initialize_weights(self):
+        """Initialize model weights"""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
+    
+    def forward(self, frames: torch.Tensor, return_attention: bool = False) -> Dict[str, torch.Tensor]:
+        """
+        Forward pass
+        
+        Args:
+            frames: Input frames tensor (batch_size, max_frames, channels, height, width)
+            return_attention: Whether to return attention weights
+            
+        Returns:
+            Dictionary containing predictions and optional attention weights
+        """
+        batch_size, num_frames, channels, height, width = frames.shape
+        
+        # Process each frame through CNN
+        frame_features = []
+        for i in range(num_frames):
+            frame = frames[:, i, :, :, :]  # (batch_size, channels, height, width)
+            features = self.cnn_backbone(frame)  # (batch_size, feature_dim, 1, 1)
+            features = features.squeeze(-1).squeeze(-1)  # (batch_size, feature_dim)
+            frame_features.append(features)
+        
+        # Stack frame features
+        frame_features = torch.stack(frame_features, dim=1)  # (batch_size, num_frames, feature_dim)
+        
+        # LSTM processing - similar to audio system
+        lstm_out, (hidden, cell) = self.lstm(frame_features)
+        # lstm_out: (batch_size, num_frames, hidden_dim * 2)
+        
+        # Frame attention - focus on important frames
+        attended_features, attention_weights = self.frame_attention(lstm_out, lstm_out, lstm_out)
+        
+        # Global average pooling over time
+        pooled_features = torch.mean(attended_features, dim=1)  # (batch_size, hidden_dim * 2)
+        
+        # Classification
+        logits = self.classifier(pooled_features)
+        probabilities = F.softmax(logits, dim=1)
+        
+        # Frame-level predictions for detailed analysis
+        frame_logits = self.frame_classifier(frame_features)  # (batch_size, num_frames, num_classes)
+        frame_probs = F.softmax(frame_logits, dim=2)
+        
+        output = {
+            'logits': logits,
+            'probabilities': probabilities,
+            'frame_logits': frame_logits,
+            'frame_probabilities': frame_probs,
+            'features': pooled_features
+        }
+        
+        if return_attention:
+            output['attention_weights'] = attention_weights
+        
+        return output
+    
+    def predict_emotion(self, frames: torch.Tensor) -> Tuple[int, float, Dict[str, float]]:
+        """
+        Predict emotion from video frames
+        
+        Args:
+            frames: Input frames tensor
+            
+        Returns:
+            Tuple of (predicted_class, confidence, class_probabilities)
+        """
+        self.eval()
+        with torch.no_grad():
+            output = self.forward(frames)
+            probabilities = output['probabilities']
+            
+            # Get predicted class and confidence
+            confidence, predicted_class = torch.max(probabilities, dim=1)
+            
+            # Convert to class probabilities dictionary
+            class_probs = {}
+            for i in range(self.num_classes):
+                class_probs[f"class_{i}"] = probabilities[0, i].item()
+            
+            return predicted_class.item(), confidence.item(), class_probs
+    
+    def get_attention_weights(self, frames: torch.Tensor) -> torch.Tensor:
+        """Get attention weights for visualization"""
+        self.eval()
+        with torch.no_grad():
+            output = self.forward(frames, return_attention=True)
+            return output['attention_weights']
+
+class VisualEmotionProcessor:
+    """Processor for visual emotion recognition"""
+    
+    def __init__(self, model_path: Optional[str] = None, device: str = 'auto'):
+        """
+        Initialize visual emotion processor
+        
+        Args:
+            model_path: Path to trained model
+            device: Device to use ('auto', 'cpu', 'cuda')
+        """
+        self.device = self._get_device(device)
+        self.model = None
+        
+        # Emotion mapping
+        self.emotion_map = {
+            0: 'neutral', 1: 'happy', 2: 'sad', 3: 'angry', 
+            4: 'fear', 5: 'surprise', 6: 'disgust'
+        }
+        self.emotion_map_reverse = {v: k for k, v in self.emotion_map.items()}
+        
+        if model_path:
+            self.load_model(model_path)
+        
+        logger.info(f"Initialized VisualEmotionProcessor on device: {self.device}")
+    
+    def _get_device(self, device: str) -> torch.device:
+        """Get appropriate device with AMD GPU support"""
+        if device == 'auto':
+            # Try to use DirectML if available (AMD GPU on Windows)
+            try:
+                import torch_directml
+                dml_device = torch_directml.device()
+                logger.info(f"Using DirectML device: {dml_device}")
+                return dml_device
+            except ImportError:
+                logger.info("DirectML not available, trying other devices...")
+            
+            if torch.cuda.is_available():
+                return torch.device('cuda')
+            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                return torch.device('mps')
+            else:
+                return torch.device('cpu')
+        else:
+            return torch.device(device)
+    
+    def load_model(self, model_path: str):
+        """Load trained model"""
+        try:
+            checkpoint = torch.load(model_path, map_location=self.device)
+            
+            # Initialize model
+            self.model = VisualEmotionModel(
+                num_classes=checkpoint.get('num_classes', 7),
+                max_frames=checkpoint.get('max_frames', 30),
+                feature_dim=checkpoint.get('feature_dim', 512),
+                hidden_dim=checkpoint.get('hidden_dim', 256),
+                num_layers=checkpoint.get('num_layers', 2),
+                dropout=checkpoint.get('dropout', 0.5)
+            )
+            
+            # Load state dict
+            self.model.load_state_dict(checkpoint['model_state_dict'])
+            self.model.to(self.device)
+            self.model.eval()
+            
+            logger.info(f"Loaded visual emotion model from {model_path}")
+            
+        except Exception as e:
+            logger.error(f"Failed to load model from {model_path}: {e}")
+            raise
+    
+    def preprocess_frames(self, frames: List[np.ndarray], target_size: Tuple[int, int] = (224, 224)) -> torch.Tensor:
+        """
+        Preprocess video frames for model input
+        
+        Args:
+            frames: List of video frames as numpy arrays
+            target_size: Target size for resizing
+            
+        Returns:
+            Preprocessed frames tensor
+        """
+        from torchvision import transforms
+        
+        # Define transforms
+        transform = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Resize(target_size),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+        
+        # Process frames
+        processed_frames = []
+        max_frames = 30
+        
+        for frame in frames:
+            # Convert BGR to RGB if needed
+            if frame.shape[2] == 3:
+                frame = frame[:, :, ::-1]  # BGR to RGB
+            
+            # Apply transforms
+            frame_tensor = transform(frame)
+            processed_frames.append(frame_tensor)
+        
+        # Pad or truncate to max_frames
+        if len(processed_frames) < max_frames:
+            # Pad with last frame
+            last_frame = processed_frames[-1] if processed_frames else torch.zeros(3, *target_size)
+            processed_frames.extend([last_frame] * (max_frames - len(processed_frames)))
+        else:
+            # Truncate to max_frames
+            processed_frames = processed_frames[:max_frames]
+        
+        # Stack frames
+        frames_tensor = torch.stack(processed_frames, dim=0)  # (max_frames, channels, height, width)
+        frames_tensor = frames_tensor.unsqueeze(0)  # Add batch dimension
+        
+        return frames_tensor.to(self.device)
+    
+    def detect_faces(self, frames: List[np.ndarray]) -> List[np.ndarray]:
+        """
+        Detect and crop faces from frames
+        
+        Args:
+            frames: List of video frames
+            
+        Returns:
+            List of face-cropped frames
+        """
+        import cv2
+        
+        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        face_frames = []
+        
+        for frame in frames:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+            
+            if len(faces) > 0:
+                # Use the largest face
+                largest_face = max(faces, key=lambda x: x[2] * x[3])
+                x, y, w, h = largest_face
+                
+                # Add padding
+                padding = int(min(w, h) * 0.2)
+                x = max(0, x - padding)
+                y = max(0, y - padding)
+                w = min(frame.shape[1] - x, w + 2 * padding)
+                h = min(frame.shape[0] - y, h + 2 * padding)
+                
+                face_frame = frame[y:y+h, x:x+w]
+                face_frames.append(face_frame)
+            else:
+                # If no face detected, use the whole frame
+                face_frames.append(frame)
+        
+        return face_frames
+    
+    def predict_emotion(self, frames: List[np.ndarray], detect_faces: bool = True) -> Dict[str, any]:
+        """
+        Predict emotion from video frames
+        
+        Args:
+            frames: List of video frames
+            detect_faces: Whether to detect and crop faces
+            
+        Returns:
+            Dictionary with prediction results
+        """
+        if self.model is None:
+            raise ValueError("Model not loaded. Call load_model() first.")
+        
+        # Detect faces if requested
+        if detect_faces:
+            frames = self.detect_faces(frames)
+        
+        # Preprocess frames
+        frames_tensor = self.preprocess_frames(frames)
+        
+        # Get prediction
+        predicted_class, confidence, class_probs = self.model.predict_emotion(frames_tensor)
+        
+        # Get emotion label
+        emotion_label = self.emotion_map[predicted_class]
+        
+        # Get attention weights for visualization
+        attention_weights = self.model.get_attention_weights(frames_tensor)
+        
+        return {
+            'emotion': emotion_label,
+            'emotion_class': predicted_class,
+            'confidence': confidence,
+            'class_probabilities': class_probs,
+            'attention_weights': attention_weights.cpu().numpy(),
+            'num_frames': len(frames)
+        }
+    
+    def get_model_info(self) -> Dict[str, any]:
+        """Get model information"""
+        if self.model is None:
+            return {'status': 'Model not loaded'}
+        
+        return {
+            'model_type': 'VisualEmotionModel',
+            'num_classes': self.model.num_classes,
+            'max_frames': self.model.max_frames,
+            'feature_dim': self.model.feature_dim,
+            'hidden_dim': self.model.hidden_dim,
+            'num_layers': self.model.num_layers,
+            'device': str(self.device),
+            'emotion_classes': list(self.emotion_map.values())
+        }
+
+def create_visual_emotion_model(config: Dict[str, any]) -> VisualEmotionModel:
+    """Create visual emotion model from configuration"""
+    return VisualEmotionModel(
+        num_classes=config.get('num_classes', 7),
+        max_frames=config.get('max_frames', 30),
+        feature_dim=config.get('feature_dim', 512),
+        hidden_dim=config.get('hidden_dim', 256),
+        num_layers=config.get('num_layers', 2),
+        dropout=config.get('dropout', 0.5),
+        pretrained=config.get('pretrained', True)
+    ) 
+"""
+Visual Emotion Recognition Model
+CNN + LSTM architecture for video-based emotion recognition
+Optimized to match the successful audio emotion recognition system
+"""
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torchvision import models
+import numpy as np
+from typing import Dict, List, Tuple, Optional
+import logging
+
+logger = logging.getLogger(__name__)
+
+class VisualEmotionModel(nn.Module):
+    """Visual emotion recognition model using CNN + LSTM architecture"""
+    
+    def __init__(self, 
+                 num_classes: int = 7,
+                 max_frames: int = 30,
+                 feature_dim: int = 512,
+                 hidden_dim: int = 256,
+                 num_layers: int = 2,
+                 dropout: float = 0.5,
+                 pretrained: bool = True):
+        """
+        Args:
+            num_classes: Number of emotion classes
+            max_frames: Maximum number of frames per video
+            feature_dim: Dimension of CNN features
+            hidden_dim: LSTM hidden dimension
+            num_layers: Number of LSTM layers
+            dropout: Dropout rate
+            pretrained: Use pretrained CNN backbone
+        """
+        super(VisualEmotionModel, self).__init__()
+        
+        self.num_classes = num_classes
+        self.max_frames = max_frames
+        self.feature_dim = feature_dim
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        
+        # CNN backbone (ResNet-18) - matches audio system approach
+        self.cnn_backbone = models.resnet18(pretrained=pretrained)
+        # Remove the final classification layer
+        self.cnn_backbone = nn.Sequential(*list(self.cnn_backbone.children())[:-1])
+        
+        # LSTM for temporal modeling - similar to audio system
+        self.lstm = nn.LSTM(
+            input_size=feature_dim,
+            hidden_size=hidden_dim,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0,
+            bidirectional=True
+        )
+        
+        # Attention mechanism for frame importance
+        self.frame_attention = nn.MultiheadAttention(
+            embed_dim=hidden_dim * 2,  # Bidirectional
+            num_heads=8,
+            dropout=dropout,
+            batch_first=True
+        )
+        
+        # Classification layers - similar structure to audio system
+        self.classifier = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim // 2, num_classes)
+        )
+        
+        # Frame-level classifier for detailed analysis
+        self.frame_classifier = nn.Sequential(
+            nn.Linear(feature_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, num_classes)
+        )
+        
+        # Initialize weights
+        self._initialize_weights()
+        
+        logger.info(f"Initialized VisualEmotionModel with {num_classes} classes, {max_frames} max frames")
+    
+    def _initialize_weights(self):
+        """Initialize model weights"""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
+    
+    def forward(self, frames: torch.Tensor, return_attention: bool = False) -> Dict[str, torch.Tensor]:
+        """
+        Forward pass
+        
+        Args:
+            frames: Input frames tensor (batch_size, max_frames, channels, height, width)
+            return_attention: Whether to return attention weights
+            
+        Returns:
+            Dictionary containing predictions and optional attention weights
+        """
+        batch_size, num_frames, channels, height, width = frames.shape
+        
+        # Process each frame through CNN
+        frame_features = []
+        for i in range(num_frames):
+            frame = frames[:, i, :, :, :]  # (batch_size, channels, height, width)
+            features = self.cnn_backbone(frame)  # (batch_size, feature_dim, 1, 1)
+            features = features.squeeze(-1).squeeze(-1)  # (batch_size, feature_dim)
+            frame_features.append(features)
+        
+        # Stack frame features
+        frame_features = torch.stack(frame_features, dim=1)  # (batch_size, num_frames, feature_dim)
+        
+        # LSTM processing - similar to audio system
+        lstm_out, (hidden, cell) = self.lstm(frame_features)
+        # lstm_out: (batch_size, num_frames, hidden_dim * 2)
+        
+        # Frame attention - focus on important frames
+        attended_features, attention_weights = self.frame_attention(lstm_out, lstm_out, lstm_out)
+        
+        # Global average pooling over time
+        pooled_features = torch.mean(attended_features, dim=1)  # (batch_size, hidden_dim * 2)
+        
+        # Classification
+        logits = self.classifier(pooled_features)
+        probabilities = F.softmax(logits, dim=1)
+        
+        # Frame-level predictions for detailed analysis
+        frame_logits = self.frame_classifier(frame_features)  # (batch_size, num_frames, num_classes)
+        frame_probs = F.softmax(frame_logits, dim=2)
+        
+        output = {
+            'logits': logits,
+            'probabilities': probabilities,
+            'frame_logits': frame_logits,
+            'frame_probabilities': frame_probs,
+            'features': pooled_features
+        }
+        
+        if return_attention:
+            output['attention_weights'] = attention_weights
+        
+        return output
+    
+    def predict_emotion(self, frames: torch.Tensor) -> Tuple[int, float, Dict[str, float]]:
+        """
+        Predict emotion from video frames
+        
+        Args:
+            frames: Input frames tensor
+            
+        Returns:
+            Tuple of (predicted_class, confidence, class_probabilities)
+        """
+        self.eval()
+        with torch.no_grad():
+            output = self.forward(frames)
+            probabilities = output['probabilities']
+            
+            # Get predicted class and confidence
+            confidence, predicted_class = torch.max(probabilities, dim=1)
+            
+            # Convert to class probabilities dictionary
+            class_probs = {}
+            for i in range(self.num_classes):
+                class_probs[f"class_{i}"] = probabilities[0, i].item()
+            
+            return predicted_class.item(), confidence.item(), class_probs
+    
+    def get_attention_weights(self, frames: torch.Tensor) -> torch.Tensor:
+        """Get attention weights for visualization"""
+        self.eval()
+        with torch.no_grad():
+            output = self.forward(frames, return_attention=True)
+            return output['attention_weights']
+
+class VisualEmotionProcessor:
+    """Processor for visual emotion recognition"""
+    
+    def __init__(self, model_path: Optional[str] = None, device: str = 'auto'):
+        """
+        Initialize visual emotion processor
+        
+        Args:
+            model_path: Path to trained model
+            device: Device to use ('auto', 'cpu', 'cuda')
+        """
+        self.device = self._get_device(device)
+        self.model = None
+        
+        # Emotion mapping
+        self.emotion_map = {
+            0: 'neutral', 1: 'happy', 2: 'sad', 3: 'angry', 
+            4: 'fear', 5: 'surprise', 6: 'disgust'
+        }
+        self.emotion_map_reverse = {v: k for k, v in self.emotion_map.items()}
+        
+        if model_path:
+            self.load_model(model_path)
+        
+        logger.info(f"Initialized VisualEmotionProcessor on device: {self.device}")
+    
+    def _get_device(self, device: str) -> torch.device:
+        """Get appropriate device with AMD GPU support"""
+        if device == 'auto':
+            # Try to use DirectML if available (AMD GPU on Windows)
+            try:
+                import torch_directml
+                dml_device = torch_directml.device()
+                logger.info(f"Using DirectML device: {dml_device}")
+                return dml_device
+            except ImportError:
+                logger.info("DirectML not available, trying other devices...")
+            
+            if torch.cuda.is_available():
+                return torch.device('cuda')
+            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                return torch.device('mps')
+            else:
+                return torch.device('cpu')
+        else:
+            return torch.device(device)
+    
+    def load_model(self, model_path: str):
+        """Load trained model"""
+        try:
+            checkpoint = torch.load(model_path, map_location=self.device)
+            
+            # Initialize model
+            self.model = VisualEmotionModel(
+                num_classes=checkpoint.get('num_classes', 7),
+                max_frames=checkpoint.get('max_frames', 30),
+                feature_dim=checkpoint.get('feature_dim', 512),
+                hidden_dim=checkpoint.get('hidden_dim', 256),
+                num_layers=checkpoint.get('num_layers', 2),
+                dropout=checkpoint.get('dropout', 0.5)
+            )
+            
+            # Load state dict
+            self.model.load_state_dict(checkpoint['model_state_dict'])
+            self.model.to(self.device)
+            self.model.eval()
+            
+            logger.info(f"Loaded visual emotion model from {model_path}")
+            
+        except Exception as e:
+            logger.error(f"Failed to load model from {model_path}: {e}")
+            raise
+    
+    def preprocess_frames(self, frames: List[np.ndarray], target_size: Tuple[int, int] = (224, 224)) -> torch.Tensor:
+        """
+        Preprocess video frames for model input
+        
+        Args:
+            frames: List of video frames as numpy arrays
+            target_size: Target size for resizing
+            
+        Returns:
+            Preprocessed frames tensor
+        """
+        from torchvision import transforms
+        
+        # Define transforms
+        transform = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Resize(target_size),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+        
+        # Process frames
+        processed_frames = []
+        max_frames = 30
+        
+        for frame in frames:
+            # Convert BGR to RGB if needed
+            if frame.shape[2] == 3:
+                frame = frame[:, :, ::-1]  # BGR to RGB
+            
+            # Apply transforms
+            frame_tensor = transform(frame)
+            processed_frames.append(frame_tensor)
+        
+        # Pad or truncate to max_frames
+        if len(processed_frames) < max_frames:
+            # Pad with last frame
+            last_frame = processed_frames[-1] if processed_frames else torch.zeros(3, *target_size)
+            processed_frames.extend([last_frame] * (max_frames - len(processed_frames)))
+        else:
+            # Truncate to max_frames
+            processed_frames = processed_frames[:max_frames]
+        
+        # Stack frames
+        frames_tensor = torch.stack(processed_frames, dim=0)  # (max_frames, channels, height, width)
+        frames_tensor = frames_tensor.unsqueeze(0)  # Add batch dimension
+        
+        return frames_tensor.to(self.device)
+    
+    def detect_faces(self, frames: List[np.ndarray]) -> List[np.ndarray]:
+        """
+        Detect and crop faces from frames
+        
+        Args:
+            frames: List of video frames
+            
+        Returns:
+            List of face-cropped frames
+        """
+        import cv2
+        
+        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        face_frames = []
+        
+        for frame in frames:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+            
+            if len(faces) > 0:
+                # Use the largest face
+                largest_face = max(faces, key=lambda x: x[2] * x[3])
+                x, y, w, h = largest_face
+                
+                # Add padding
+                padding = int(min(w, h) * 0.2)
+                x = max(0, x - padding)
+                y = max(0, y - padding)
+                w = min(frame.shape[1] - x, w + 2 * padding)
+                h = min(frame.shape[0] - y, h + 2 * padding)
+                
+                face_frame = frame[y:y+h, x:x+w]
+                face_frames.append(face_frame)
+            else:
+                # If no face detected, use the whole frame
+                face_frames.append(frame)
+        
+        return face_frames
+    
+    def predict_emotion(self, frames: List[np.ndarray], detect_faces: bool = True) -> Dict[str, any]:
+        """
+        Predict emotion from video frames
+        
+        Args:
+            frames: List of video frames
+            detect_faces: Whether to detect and crop faces
+            
+        Returns:
+            Dictionary with prediction results
+        """
+        if self.model is None:
+            raise ValueError("Model not loaded. Call load_model() first.")
+        
+        # Detect faces if requested
+        if detect_faces:
+            frames = self.detect_faces(frames)
+        
+        # Preprocess frames
+        frames_tensor = self.preprocess_frames(frames)
+        
+        # Get prediction
+        predicted_class, confidence, class_probs = self.model.predict_emotion(frames_tensor)
+        
+        # Get emotion label
+        emotion_label = self.emotion_map[predicted_class]
+        
+        # Get attention weights for visualization
+        attention_weights = self.model.get_attention_weights(frames_tensor)
+        
+        return {
+            'emotion': emotion_label,
+            'emotion_class': predicted_class,
+            'confidence': confidence,
+            'class_probabilities': class_probs,
+            'attention_weights': attention_weights.cpu().numpy(),
+            'num_frames': len(frames)
+        }
+    
+    def get_model_info(self) -> Dict[str, any]:
+        """Get model information"""
+        if self.model is None:
+            return {'status': 'Model not loaded'}
+        
+        return {
+            'model_type': 'VisualEmotionModel',
+            'num_classes': self.model.num_classes,
+            'max_frames': self.model.max_frames,
+            'feature_dim': self.model.feature_dim,
+            'hidden_dim': self.model.hidden_dim,
+            'num_layers': self.model.num_layers,
+            'device': str(self.device),
+            'emotion_classes': list(self.emotion_map.values())
+        }
+
+def create_visual_emotion_model(config: Dict[str, any]) -> VisualEmotionModel:
+    """Create visual emotion model from configuration"""
+    return VisualEmotionModel(
+        num_classes=config.get('num_classes', 7),
+        max_frames=config.get('max_frames', 30),
+        feature_dim=config.get('feature_dim', 512),
+        hidden_dim=config.get('hidden_dim', 256),
+        num_layers=config.get('num_layers', 2),
+        dropout=config.get('dropout', 0.5),
+        pretrained=config.get('pretrained', True)
+    ) 
+ 

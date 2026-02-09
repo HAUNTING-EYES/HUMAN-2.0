@@ -1,0 +1,114 @@
+{
+  "self_improvement": {
+    "target_dirs": ["src"],
+    "exclude_patterns": [
+      "**/test_*",
+      "**/__pycache__",
+      "**/archived_*",
+      "**/.pytest_cache",
+      "**/.venv",
+      "**/node_modules"
+    ],
+    "max_files_per_cycle": 5,
+    "require_tests": true,
+    "auto_generate_tests": true,
+    "min_criticality_for_auto_fix": 0.3
+  },
+
+  "llm_ensemble": {
+    "code_improver": {
+      "provider": "openai",
+      "model": "gpt-4",
+      "api_key_env": "OPENAI_API_KEY",
+      "use_case": "code_generation_and_improvement",
+      "temperature": 0.3,
+      "max_tokens": 2500
+    },
+    "reasoner": {
+      "provider": "together",
+      "model": "meta-llama/Meta-Llama-3-70B-Instruct",
+      "api_key_env": "TOGETHER_API_KEY",
+      "use_case": "planning_and_analysis",
+      "temperature": 0.5,
+      "max_tokens": 2000
+    }
+  },
+
+  "chromadb": {
+    "path": "data/unified_chroma_db",
+    "collections": {
+      "codebase": {
+        "name": "codebase",
+        "embedding_model": "sentence-transformers/all-mpnet-base-v2",
+        "description": "All Python files in src/ for similarity search"
+      },
+      "improvements": {
+        "name": "improvements",
+        "embedding_model": "sentence-transformers/all-mpnet-base-v2",
+        "description": "History of code improvements for meta-learning"
+      },
+      "external_knowledge": {
+        "name": "external_knowledge",
+        "embedding_model": "sentence-transformers/all-mpnet-base-v2",
+        "description": "Patterns learned from GitHub and web"
+      }
+    },
+    "batch_size": 32,
+    "device": "cpu"
+  },
+
+  "github_learning": {
+    "max_repos_per_question": 3,
+    "max_files_per_repo": 10,
+    "cache_duration_hours": 24,
+    "preferred_languages": ["Python"],
+    "min_stars": 100
+  },
+
+  "meta_learning": {
+    "min_history_for_optimization": 10,
+    "strategy_selection_threshold": 0.6,
+    "success_weight": 1.0,
+    "failure_weight": -0.5,
+    "enable_strategy_evolution": true
+  },
+
+  "dependency_analysis": {
+    "max_depth_for_context": 2,
+    "include_reverse_deps": true,
+    "detect_circular_deps": true,
+    "criticality_threshold": 0.7
+  },
+
+  "test_generation": {
+    "max_tests_per_session": 10,
+    "prioritize_by_complexity": true,
+    "validate_before_save": true,
+    "timeout_seconds": 60
+  },
+
+  "safety": {
+    "backup_before_modify": true,
+    "backup_dir": "backups/self_improvement",
+    "require_syntax_validation": true,
+    "require_tests_pass": true,
+    "rollback_on_failure": true,
+    "max_rollback_attempts": 3,
+    "create_git_commits": false
+  },
+
+  "logging": {
+    "level": "INFO",
+    "log_file": "agi.log",
+    "log_format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    "rotate_logs": true,
+    "max_log_size_mb": 10
+  },
+
+  "performance": {
+    "parallel_processing": false,
+    "max_workers": 4,
+    "cache_embeddings": true,
+    "lazy_load_models": true
+  }
+}
