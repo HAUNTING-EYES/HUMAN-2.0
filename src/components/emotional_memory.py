@@ -11,11 +11,11 @@ import os
 import glob
 import tempfile
 
-class EmotionalMemory:
-    """Component for managing emotional state and memory."""
+class EmotionalMemoryCore:
+    """Core component for managing emotional state."""
     
     def __init__(self, base_dir: Optional[str] = None, **kwargs):
-        """Initialize EmotionalMemory component."""
+        """Initialize EmotionalMemoryCore component."""
         # Set up logging
         logging.basicConfig(level=logging.INFO)
         self.logger = logging.getLogger(__name__)

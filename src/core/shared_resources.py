@@ -36,6 +36,18 @@ except ImportError:
     from src.core.semantic_code_model import SemanticCodeModel  # PHASE 2
     from src.core.thought_trace import ThoughtTraceManager  # PHASE 4
 
+# Consciousness systems
+try:
+    from consciousness.curiosity import CuriosityEngine
+    HAS_CURIOSITY_ENGINE = True
+except ImportError:
+    try:
+        from src.consciousness.curiosity import CuriosityEngine
+        HAS_CURIOSITY_ENGINE = True
+    except ImportError:
+        HAS_CURIOSITY_ENGINE = False
+        CuriosityEngine = None
+
 
 @dataclass
 class Pattern:
@@ -83,498 +95,454 @@ class KnowledgeNode:
             self.created_at = datetime.now()
 
 
-class SharedResources:
-    """
-    Unified resource manager for multi-agent system.
+@dataclass
+class ResourcePaths:
+    """Configuration for resource storage paths"""
+    root_dir: Path
+    chroma_dir: str
+    knowledge_graph_path: Path
+    pattern_library_path: Path
+    model_cache_path: Path
+    metrics_db_path: Path
+    semantic_model_path: Path
+    
+    @classmethod
+    def create(cls, root_dir: str = '.', 
+               chroma_dir: str = "data/unified_chroma_db",
+               knowledge_graph_path: str = "data/knowledge_graph.json",
+               pattern_library_path: str = "data/pattern_library.json",
+               model_cache_path: str = "data/model_cache.json",
+               metrics_db_path: str = "data/metrics_db.json",
+               semantic_model_path: str = "data/semantic_model.json"):
+        root = Path(root_dir).resolve()
+        return cls(
+            root_dir=root,
+            chroma_dir=chroma_dir,
+            knowledge_graph_path=Path(knowledge_graph_path),
+            pattern_library_path=Path(pattern_library_path),
+            model_cache_path=Path(model_cache_path),
+            metrics_db_path=Path(metrics_db_path),
+            semantic_model_path=Path(semantic_model_path)
+        )
 
-    All agents access shared resources through this manager for:
-    - Consistency: Single source of truth
-    - Efficiency: Shared caches and indexes
-    - Safety: Centralized validation
-    """
 
-    def __init__(self,
-                 root_dir: str = '.',
-                 chroma_dir: str = "data/unified_chroma_db",
-                 knowledge_graph_path: str = "data/knowledge_graph.json",
-                 pattern_library_path: str = "data/pattern_library.json",
-                 model_cache_path: str = "data/model_cache.json",
-                 metrics_db_path: str = "data/metrics_db.json",
-                 semantic_model_path: str = "data/semantic_model.json"):
-        """
-        Initialize shared resources manager.
-
-        Args:
-            root_dir: Project root directory
-            chroma_dir: ChromaDB persistence directory
-            knowledge_graph_path: Knowledge graph storage
-            pattern_library_path: Pattern library storage
-            model_cache_path: Model cache storage
-            metrics_db_path: Metrics database storage
-        """
+class KnowledgeGraphManager:
+    """Manages the knowledge graph"""
+    
+    def __init__(self, storage_path: Path):
         self.logger = logging.getLogger(__name__)
-        self.root_dir = Path(root_dir).resolve()
-
-        # Data directories
-        self.data_dir = self.root_dir / "data"
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-
-        # Initialize existing V2 components
-        self.logger.info("Initializing V2 components...")
-        self.dependency_analyzer = DependencyAnalyzer(root_dir=str(self.root_dir))
-        self.code_embedder = CodeEmbedder(chroma_dir=chroma_dir)
-        self.meta_learner = MetaLearner()
-
-        # Initialize new multi-agent components
-        self.logger.info("Initializing multi-agent components...")
-
-        # Knowledge Graph (NEW)
-        self.knowledge_graph_path = Path(knowledge_graph_path)
-        self.knowledge_graph: Dict[str, KnowledgeNode] = {}
-        self._load_knowledge_graph()
-
-        # Pattern Library (NEW)
-        self.pattern_library_path = Path(pattern_library_path)
-        self.pattern_library: Dict[str, Pattern] = {}
-        self._load_pattern_library()
-
-        # Model Cache (NEW) - Cache LLM responses to save API calls
-        self.model_cache_path = Path(model_cache_path)
-        self.model_cache: Dict[str, Any] = {}
-        self._load_model_cache()
-
-        # Metrics Database (NEW) - Centralized metrics tracking
-        self.metrics_db_path = Path(metrics_db_path)
-        self.metrics_db: Dict[str, Any] = {}
-        self._load_metrics_db()
-
-        # Semantic Code Model (PHASE 2) - Deep code understanding
-        self.semantic_model_path = Path(semantic_model_path)
-        self.semantic_model = SemanticCodeModel()
-        self._load_semantic_model()
-
-        # Thought Trace Manager (PHASE 4) - Agent reasoning transparency
-        self.thought_trace_manager = ThoughtTraceManager(trace_dir="data/thought_traces")
-
-        self.logger.info(f"SharedResources initialized with root: {self.root_dir}")
-        self.logger.info(f"Knowledge Graph: {len(self.knowledge_graph)} nodes")
-        self.logger.info(f"Pattern Library: {len(self.pattern_library)} patterns")
-        self.logger.info(f"Model Cache: {len(self.model_cache)} entries")
-        self.logger.info(f"Semantic Model: {len(self.semantic_model.component_understanding)} components")
-        self.logger.info(f"Thought Trace Manager: Initialized")
-
-    # ========== V2 Component Access ==========
-
-    def get_dependencies(self, file_path: str) -> List[str]:
-        """Get dependencies of a file (what it imports)"""
-        return self.dependency_analyzer.get_dependencies(file_path)
-
-    def get_reverse_dependencies(self, file_path: str) -> List[str]:
-        """Get reverse dependencies (what imports this file)"""
-        return self.dependency_analyzer.get_reverse_dependencies(file_path)
-
-    def get_file_criticality(self, file_path: str) -> float:
-        """Get file criticality score (0-1)"""
-        return self.dependency_analyzer.calculate_criticality(file_path)
-
-    def get_dependency_graph(self) -> nx.DiGraph:
-        """Get the complete dependency graph"""
-        return self.dependency_analyzer.graph
-
-    def search_similar_code(self, query: str, n_results: int = 5) -> List[Dict[str, Any]]:
-        """Search for similar code using ChromaDB semantic search"""
-        return self.code_embedder.find_similar_code(query, n_results=n_results)
-
-    def embed_file(self, file_path: str):
-        """Embed a single file in ChromaDB"""
-        self.code_embedder.embed_file(file_path)
-
-    def record_improvement_outcome(self, outcome: Dict[str, Any]):
-        """Record improvement outcome for meta-learning"""
-        self.meta_learner.record_outcome(outcome)
-
-    # ========== Knowledge Graph ==========
-
-    def add_knowledge_node(self, node: KnowledgeNode):
+        self.storage_path = storage_path
+        self.graph: Dict[str, KnowledgeNode] = {}
+        self._load()
+    
+    def add_node(self, node: KnowledgeNode):
         """Add node to knowledge graph"""
-        self.knowledge_graph[node.node_id] = node
+        self.graph[node.node_id] = node
         self.logger.debug(f"Added knowledge node: {node.node_id}")
-
-    def get_knowledge_node(self, node_id: str) -> Optional[KnowledgeNode]:
+    
+    def get_node(self, node_id: str) -> Optional[KnowledgeNode]:
         """Get knowledge node by ID"""
-        return self.knowledge_graph.get(node_id)
-
-    def connect_knowledge_nodes(self, node_id_1: str, node_id_2: str):
+        return self.graph.get(node_id)
+    
+    def connect_nodes(self, node_id_1: str, node_id_2: str):
         """Create bidirectional connection between knowledge nodes"""
-        if node_id_1 in self.knowledge_graph:
-            self.knowledge_graph[node_id_1].connections.add(node_id_2)
-        if node_id_2 in self.knowledge_graph:
-            self.knowledge_graph[node_id_2].connections.add(node_id_1)
+        if node_id_1 in self.graph:
+            self.graph[node_id_1].connections.add(node_id_2)
+        if node_id_2 in self.graph:
+            self.graph[node_id_2].connections.add(node_id_1)
         self.logger.debug(f"Connected nodes: {node_id_1} <-> {node_id_2}")
-
-    def search_knowledge_graph(self, query: str, node_type: Optional[str] = None) -> List[KnowledgeNode]:
+    
+    def search(self, query: str, node_type: Optional[str] = None) -> List[KnowledgeNode]:
         """Search knowledge graph by content or type"""
         results = []
-        for node in self.knowledge_graph.values():
+        for node in self.graph.values():
             if node_type and node.node_type != node_type:
                 continue
             if query.lower() in node.content.lower():
                 results.append(node)
         return results
-
-    def _load_knowledge_graph(self):
+    
+    def _load(self):
         """Load knowledge graph from disk"""
-        if self.knowledge_graph_path.exists():
-            try:
-                with open(self.knowledge_graph_path, 'r') as f:
-                    data = json.load(f)
-                    for node_id, node_data in data.items():
-                        # Convert connections from list to set
-                        if 'connections' in node_data:
-                            node_data['connections'] = set(node_data['connections'])
-                        # Convert timestamp string to datetime
-                        if 'created_at' in node_data:
-                            node_data['created_at'] = datetime.fromisoformat(node_data['created_at'])
-                        self.knowledge_graph[node_id] = KnowledgeNode(**node_data)
-                self.logger.info(f"Loaded {len(self.knowledge_graph)} knowledge nodes")
-            except Exception as e:
-                self.logger.error(f"Error loading knowledge graph: {e}")
-                self.knowledge_graph = {}
-
-    def save_knowledge_graph(self):
+        if not self.storage_path.exists():
+            return
+            
+        try:
+            with open(self.storage_path, 'r') as f:
+                data = json.load(f)
+                for node_id, node_data in data.items():
+                    if 'connections' in node_data:
+                        node_data['connections'] = set(node_data['connections'])
+                    if 'created_at' in node_data:
+                        node_data['created_at'] = datetime.fromisoformat(node_data['created_at'])
+                    self.graph[node_id] = KnowledgeNode(**node_data)
+            self.logger.info(f"Loaded {len(self.graph)} knowledge nodes")
+        except Exception as e:
+            self.logger.error(f"Error loading knowledge graph: {e}")
+            self.graph = {}
+    
+    def save(self):
         """Save knowledge graph to disk"""
         try:
             data = {}
-            for node_id, node in self.knowledge_graph.items():
+            for node_id, node in self.graph.items():
                 node_dict = asdict(node)
-                # Convert set to list for JSON serialization
                 node_dict['connections'] = list(node.connections)
-                # Convert datetime to ISO string
                 node_dict['created_at'] = node.created_at.isoformat()
                 data[node_id] = node_dict
 
-            with open(self.knowledge_graph_path, 'w') as f:
+            with open(self.storage_path, 'w') as f:
                 json.dump(data, f, indent=2)
-            self.logger.info(f"Saved {len(self.knowledge_graph)} knowledge nodes")
+            self.logger.info(f"Saved {len(self.graph)} knowledge nodes")
         except Exception as e:
             self.logger.error(f"Error saving knowledge graph: {e}")
 
-    # ========== Pattern Library ==========
 
+class PatternLibraryManager:
+    """Manages the pattern library"""
+    
+    def __init__(self, storage_path: Path):
+        self.logger = logging.getLogger(__name__)
+        self.storage_path = storage_path
+        self.library: Dict[str, Pattern] = {}
+        self._load()
+    
     def add_pattern(self, pattern: Pattern):
         """Add pattern to library"""
-        self.pattern_library[pattern.pattern_id] = pattern
+        self.library[pattern.pattern_id] = pattern
         self.logger.debug(f"Added pattern: {pattern.name}")
-
+    
     def get_pattern(self, pattern_id: str) -> Optional[Pattern]:
         """Get pattern by ID"""
-        return self.pattern_library.get(pattern_id)
-
-    def search_patterns(self, category: Optional[str] = None,
-                       min_success_rate: float = 0.0,
-                       tags: Optional[List[str]] = None) -> List[Pattern]:
+        return self.library.get(pattern_id)
+    
+    def search(self, category: Optional[str] = None,
+               min_success_rate: float = 0.0,
+               tags: Optional[List[str]] = None) -> List[Pattern]:
         """Search patterns by criteria"""
         results = []
-        for pattern in self.pattern_library.values():
-            # Filter by category
+        for pattern in self.library.values():
             if category and pattern.category != category:
                 continue
-            # Filter by success rate
             if pattern.success_rate < min_success_rate:
                 continue
-            # Filter by tags
             if tags and not any(tag in pattern.tags for tag in tags):
                 continue
             results.append(pattern)
 
-        # Sort by success rate
         results.sort(key=lambda p: p.success_rate, reverse=True)
         return results
-
-    def update_pattern_outcome(self, pattern_id: str, success: bool, improvement: float = 0.0):
+    
+    def update_outcome(self, pattern_id: str, success: bool, improvement: float = 0.0):
         """Update pattern outcome statistics"""
-        if pattern_id in self.pattern_library:
-            pattern = self.pattern_library[pattern_id]
-            if success:
-                pattern.success_count += 1
-            else:
-                pattern.failure_count += 1
+        if pattern_id not in self.library:
+            return
+            
+        pattern = self.library[pattern_id]
+        if success:
+            pattern.success_count += 1
+        else:
+            pattern.failure_count += 1
 
-            # Update rolling average improvement
-            total = pattern.success_count + pattern.failure_count
-            pattern.avg_improvement = ((pattern.avg_improvement * (total - 1)) + improvement) / total
+        total = pattern.success_count + pattern.failure_count
+        pattern.avg_improvement = ((pattern.avg_improvement * (total - 1)) + improvement) / total
 
-            self.logger.debug(f"Updated pattern {pattern.name}: success_rate={pattern.success_rate:.2f}")
-
-    def _load_pattern_library(self):
+        self.logger.debug(f"Updated pattern {pattern.name}: success_rate={pattern.success_rate:.2f}")
+    
+    def _load(self):
         """Load pattern library from disk"""
-        if self.pattern_library_path.exists():
-            try:
-                with open(self.pattern_library_path, 'r') as f:
-                    data = json.load(f)
-                    for pattern_id, pattern_data in data.items():
-                        # Convert timestamp string to datetime
-                        if 'created_at' in pattern_data:
-                            pattern_data['created_at'] = datetime.fromisoformat(pattern_data['created_at'])
-                        self.pattern_library[pattern_id] = Pattern(**pattern_data)
-                self.logger.info(f"Loaded {len(self.pattern_library)} patterns")
-            except Exception as e:
-                self.logger.error(f"Error loading pattern library: {e}")
-                self.pattern_library = {}
-
-    def save_pattern_library(self):
+        if not self.storage_path.exists():
+            return
+            
+        try:
+            with open(self.storage_path, 'r') as f:
+                data = json.load(f)
+                for pattern_id, pattern_data in data.items():
+                    if 'created_at' in pattern_data:
+                        pattern_data['created_at'] = datetime.fromisoformat(pattern_data['created_at'])
+                    self.library[pattern_id] = Pattern(**pattern_data)
+            self.logger.info(f"Loaded {len(self.library)} patterns")
+        except Exception as e:
+            self.logger.error(f"Error loading pattern library: {e}")
+            self.library = {}
+    
+    def save(self):
         """Save pattern library to disk"""
         try:
             data = {}
-            for pattern_id, pattern in self.pattern_library.items():
+            for pattern_id, pattern in self.library.items():
                 pattern_dict = asdict(pattern)
-                # Convert datetime to ISO string
                 pattern_dict['created_at'] = pattern.created_at.isoformat()
                 data[pattern_id] = pattern_dict
 
-            with open(self.pattern_library_path, 'w') as f:
+            with open(self.storage_path, 'w') as f:
                 json.dump(data, f, indent=2)
-            self.logger.info(f"Saved {len(self.pattern_library)} patterns")
+            self.logger.info(f"Saved {len(self.library)} patterns")
         except Exception as e:
             self.logger.error(f"Error saving pattern library: {e}")
 
-    # ========== Model Cache ==========
 
-    def get_cached_response(self, prompt: str, model: str = "claude-3.5-sonnet") -> Optional[str]:
+class ModelCacheManager:
+    """Manages LLM response caching"""
+    
+    def __init__(self, storage_path: Path):
+        self.logger = logging.getLogger(__name__)
+        self.storage_path = storage_path
+        self.cache: Dict[str, Any] = {}
+        self._load()
+    
+    def get_response(self, prompt: str, model: str = "claude-3.5-sonnet") -> Optional[str]:
         """Get cached LLM response if available"""
-        cache_key = self._make_cache_key(prompt, model)
-        entry = self.model_cache.get(cache_key)
+        cache_key = self._make_key(prompt, model)
+        entry = self.cache.get(cache_key)
         if entry:
             self.logger.debug(f"Cache hit for prompt hash: {cache_key[:8]}...")
             return entry['response']
         return None
-
+    
     def cache_response(self, prompt: str, response: str, model: str = "claude-3.5-sonnet"):
         """Cache LLM response"""
-        cache_key = self._make_cache_key(prompt, model)
-        self.model_cache[cache_key] = {
+        cache_key = self._make_key(prompt, model)
+        self.cache[cache_key] = {
             'prompt': prompt,
             'response': response,
             'model': model,
             'timestamp': datetime.now().isoformat()
         }
         self.logger.debug(f"Cached response for prompt hash: {cache_key[:8]}...")
-
-    def _make_cache_key(self, prompt: str, model: str) -> str:
+    
+    def _make_key(self, prompt: str, model: str) -> str:
         """Create cache key from prompt and model"""
         content = f"{model}::{prompt}"
         return hashlib.sha256(content.encode()).hexdigest()
-
-    def _load_model_cache(self):
+    
+    def _load(self):
         """Load model cache from disk"""
-        if self.model_cache_path.exists():
-            try:
-                with open(self.model_cache_path, 'r') as f:
-                    self.model_cache = json.load(f)
-                self.logger.info(f"Loaded {len(self.model_cache)} cached responses")
-            except Exception as e:
-                self.logger.error(f"Error loading model cache: {e}")
-                self.model_cache = {}
-
-    def save_model_cache(self):
+        if not self.storage_path.exists():
+            return
+            
+        try:
+            with open(self.storage_path, 'r') as f:
+                self.cache = json.load(f)
+            self.logger.info(f"Loaded {len(self.cache)} cached responses")
+        except Exception as e:
+            self.logger.error(f"Error loading model cache: {e}")
+            self.cache = {}
+    
+    def save(self):
         """Save model cache to disk"""
         try:
-            with open(self.model_cache_path, 'w') as f:
-                json.dump(self.model_cache, f, indent=2)
-            self.logger.info(f"Saved {len(self.model_cache)} cached responses")
+            with open(self.storage_path, 'w') as f:
+                json.dump(self.cache, f, indent=2)
+            self.logger.info(f"Saved {len(self.cache)} cached responses")
         except Exception as e:
             self.logger.error(f"Error saving model cache: {e}")
 
-    # ========== Metrics Database ==========
 
-    def record_metric(self, category: str, name: str, value: Any, metadata: Optional[Dict[str, Any]] = None):
+class MetricsDatabase:
+    """Manages centralized metrics tracking"""
+
+    def __init__(self, storage_path: Path):
+        self.logger = logging.getLogger(__name__)
+        self.storage_path = storage_path
+        self.db: Dict[str, Any] = {}
+        self._load()
+
+    def record(self, category: str, name: str, value: Any, metadata: Optional[Dict[str, Any]] = None):
         """Record a metric"""
-        if category not in self.metrics_db:
-            self.metrics_db[category] = {}
-
-        if name not in self.metrics_db[category]:
-            self.metrics_db[category][name] = []
-
-        self.metrics_db[category][name].append({
+        if category not in self.db:
+            self.db[category] = {}
+        if name not in self.db[category]:
+            self.db[category][name] = []
+        self.db[category][name].append({
             'value': value,
             'timestamp': datetime.now().isoformat(),
             'metadata': metadata or {}
         })
 
-    def get_metrics(self, category: str, name: Optional[str] = None) -> Dict[str, Any]:
+    def get(self, category: str, name: Optional[str] = None) -> Dict[str, Any]:
         """Get metrics by category and optionally by name"""
-        if category not in self.metrics_db:
+        if category not in self.db:
             return {}
-
         if name:
-            return self.metrics_db[category].get(name, [])
+            return self.db[category].get(name, [])
+        return self.db[category]
 
-        return self.metrics_db[category]
-
-    def get_latest_metric(self, category: str, name: str) -> Optional[Any]:
+    def get_latest(self, category: str, name: str) -> Optional[Any]:
         """Get the latest value for a metric"""
-        metrics = self.get_metrics(category, name)
+        metrics = self.get(category, name)
         if metrics:
             return metrics[-1]['value']
         return None
 
-    def _load_metrics_db(self):
+    def _load(self):
         """Load metrics database from disk"""
-        if self.metrics_db_path.exists():
-            try:
-                with open(self.metrics_db_path, 'r') as f:
-                    self.metrics_db = json.load(f)
-                total_metrics = sum(len(metrics) for category in self.metrics_db.values() for metrics in category.values())
-                self.logger.info(f"Loaded metrics database: {total_metrics} total metrics")
-            except Exception as e:
-                self.logger.error(f"Error loading metrics database: {e}")
-                self.metrics_db = {}
+        if not self.storage_path.exists():
+            return
+        try:
+            with open(self.storage_path, 'r') as f:
+                self.db = json.load(f)
+            total = sum(len(metrics) for category in self.db.values() for metrics in category.values())
+            self.logger.info(f"Loaded metrics database: {total} total metrics")
+        except Exception as e:
+            self.logger.error(f"Error loading metrics database: {e}")
+            self.db = {}
 
-    def save_metrics_db(self):
+    def save(self):
         """Save metrics database to disk"""
         try:
-            with open(self.metrics_db_path, 'w') as f:
-                json.dump(self.metrics_db, f, indent=2)
-            total_metrics = sum(len(metrics) for category in self.metrics_db.values() for metrics in category.values())
-            self.logger.info(f"Saved metrics database: {total_metrics} total metrics")
+            with open(self.storage_path, 'w') as f:
+                json.dump(self.db, f, indent=2)
         except Exception as e:
             self.logger.error(f"Error saving metrics database: {e}")
 
-    # ========== Semantic Model (PHASE 2) ==========
+
+class SharedResources:
+    """
+    Unified access to all shared data structures and services.
+
+    Singleton-like aggregator for all managers.
+    """
+
+    def __init__(self, root_dir: str = '.'):
+        self.logger = logging.getLogger(__name__)
+        self.paths = ResourcePaths.create(root_dir=root_dir)
+        self.root_dir = self.paths.root_dir
+
+        # Data directory
+        data_dir = self.root_dir / "data"
+        data_dir.mkdir(parents=True, exist_ok=True)
+
+        # Storage managers
+        self.knowledge_graph = KnowledgeGraphManager(self.paths.knowledge_graph_path)
+        self.pattern_library = PatternLibraryManager(self.paths.pattern_library_path)
+        self.model_cache = ModelCacheManager(self.paths.model_cache_path)
+        self.metrics_db = MetricsDatabase(self.paths.metrics_db_path)
+
+        # V2 components
+        self.dependency_analyzer = DependencyAnalyzer(root_dir=str(self.root_dir))
+        self.code_embedder = CodeEmbedder(chroma_dir=self.paths.chroma_dir)
+        self.meta_learner = MetaLearner()
+
+        # Consciousness
+        if HAS_CURIOSITY_ENGINE:
+            self.curiosity_engine = CuriosityEngine()
+            self.logger.info("CuriosityEngine initialized for curiosity-driven learning")
+        else:
+            self.curiosity_engine = None
+
+        # Semantic model & thought traces
+        self.semantic_model = SemanticCodeModel()
+        self._load_semantic_model()
+        self.thought_trace_manager = ThoughtTraceManager(trace_dir="data/thought_traces")
+
+        self.logger.info(f"SharedResources initialized with root: {self.root_dir}")
+        self.logger.info(f"Knowledge Graph: {len(self.knowledge_graph.graph)} nodes")
+        self.logger.info(f"Pattern Library: {len(self.pattern_library.library)} patterns")
+        self.logger.info(f"Model Cache: {len(self.model_cache.cache)} entries")
+        self.logger.info(f"Semantic Model: {len(self.semantic_model.component_understanding)} components")
+        self.logger.info(f"Thought Trace Manager: Initialized")
+
+    # ========== Delegate Methods ==========
+    # These delegate to sub-managers so the rest of the codebase
+    # can call self.resources.method() without knowing internals.
+
+    def get_dependencies(self, file_path: str) -> List[str]:
+        return self.dependency_analyzer.get_dependencies(file_path)
+
+    def get_reverse_dependencies(self, file_path: str) -> List[str]:
+        return self.dependency_analyzer.get_reverse_dependencies(file_path)
+
+    def get_file_criticality(self, file_path: str) -> float:
+        return self.dependency_analyzer.calculate_criticality(file_path)
+
+    def get_dependency_graph(self):
+        return self.dependency_analyzer.graph
+
+    def search_similar_code(self, query: str, n_results: int = 5) -> List[Dict[str, Any]]:
+        try:
+            return self.code_embedder.search_similar(query=query, n_results=n_results)
+        except Exception:
+            return []
+
+    def store_improvement(self, file_path: str, original: str, improved: str, metadata: Dict = None):
+        try:
+            self.code_embedder.store_improvement(
+                file_path=file_path, original_code=original,
+                improved_code=improved, metadata=metadata or {}
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to store improvement: {e}")
+
+    def search_patterns(self, category: str = None, min_success_rate: float = 0.0) -> List[Pattern]:
+        results = []
+        for p in self.pattern_library.library.values():
+            if category and p.category != category:
+                continue
+            if p.success_rate >= min_success_rate:
+                results.append(p)
+        return sorted(results, key=lambda p: p.success_rate, reverse=True)
+
+    def add_pattern(self, pattern: Pattern):
+        self.pattern_library.add(pattern)
+
+    def update_pattern_outcome(self, pattern_id: str, success: bool):
+        p = self.pattern_library.library.get(pattern_id)
+        if p:
+            p.usage_count += 1
+            alpha = 0.2
+            p.success_rate = (1 - alpha) * p.success_rate + alpha * (1.0 if success else 0.0)
+
+    def add_knowledge_node(self, node: KnowledgeNode):
+        self.knowledge_graph.add_node(node)
+
+    def record_metric(self, category: str, name: str, value: Any, metadata: Dict = None):
+        self.metrics_db.record(category, name, value, metadata)
+
+    def get_metrics(self, category: str, name: str = None) -> Dict[str, Any]:
+        return self.metrics_db.get(category, name)
+
+    def get_latest_metric(self, category: str, name: str) -> Optional[Any]:
+        return self.metrics_db.get_latest(category, name)
+
+    def get_cached_response(self, key: str) -> Optional[Any]:
+        return self.model_cache.cache.get(key)
+
+    def cache_response(self, key: str, response: Any):
+        self.model_cache.cache[key] = response
+
+    def get_component_understanding(self, file_path: str):
+        return self.semantic_model.component_understanding.get(file_path)
+
+    def analyze_component_semantics(self, file_path: str, code: str):
+        return self.semantic_model.analyze_component(file_path, code)
+
+    # ========== Persistence ==========
 
     def _load_semantic_model(self):
-        """Load semantic model from disk"""
         try:
-            if self.semantic_model_path.exists():
-                self.semantic_model.load(str(self.semantic_model_path))
-                self.logger.info(f"Loaded semantic model: {len(self.semantic_model.component_understanding)} components")
+            if self.paths.semantic_model_path.exists():
+                self.semantic_model.load(str(self.paths.semantic_model_path))
             else:
                 self.logger.info("No existing semantic model found, starting fresh")
         except Exception as e:
             self.logger.error(f"Error loading semantic model: {e}")
 
-    def save_semantic_model(self):
-        """Save semantic model to disk"""
+    def save_all(self):
+        """Save all managers to disk"""
+        self.knowledge_graph.save()
+        self.pattern_library.save()
+        self.model_cache.save()
+        self.metrics_db.save()
         try:
-            self.semantic_model.save(str(self.semantic_model_path))
-            self.logger.info(f"Saved semantic model: {len(self.semantic_model.component_understanding)} components")
+            self.semantic_model.save(str(self.paths.semantic_model_path))
         except Exception as e:
             self.logger.error(f"Error saving semantic model: {e}")
-
-    def get_component_understanding(self, file_path: str):
-        """Get semantic understanding of a component"""
-        return self.semantic_model.component_understanding.get(file_path)
-
-    def analyze_component_semantics(self, file_path: str, code: str):
-        """Analyze component semantics"""
-        return self.semantic_model.analyze_component(file_path, code)
-
-    # ========== Persistence ==========
-
-    def save_all(self):
-        """Save all resources to disk"""
-        self.logger.info("Saving all shared resources...")
-        self.save_knowledge_graph()
-        self.save_pattern_library()
-        self.save_model_cache()
-        self.save_metrics_db()
-        self.save_semantic_model()  # PHASE 2
         self.logger.info("All resources saved")
 
     def get_stats(self) -> Dict[str, Any]:
-        """Get statistics about shared resources"""
         return {
-            'dependency_graph': {
-                'nodes': self.dependency_analyzer.graph.number_of_nodes(),
-                'edges': self.dependency_analyzer.graph.number_of_edges()
-            },
-            'chromadb': {
-                'codebase_count': self.code_embedder.codebase_collection.count(),
-                'improvements_count': self.code_embedder.improvements_collection.count(),
-                'external_knowledge_count': self.code_embedder.external_knowledge_collection.count()
-            },
-            'knowledge_graph': {
-                'nodes': len(self.knowledge_graph)
-            },
-            'pattern_library': {
-                'total_patterns': len(self.pattern_library),
-                'avg_success_rate': sum(p.success_rate for p in self.pattern_library.values()) / len(self.pattern_library) if self.pattern_library else 0.0
-            },
-            'model_cache': {
-                'cached_responses': len(self.model_cache)
-            },
-            'metrics_db': {
-                'categories': len(self.metrics_db),
-                'total_metrics': sum(len(metrics) for category in self.metrics_db.values() for metrics in category.values())
-            }
+            'knowledge_graph': {'nodes': len(self.knowledge_graph.graph)},
+            'pattern_library': {'total_patterns': len(self.pattern_library.library)},
+            'model_cache': {'cached_responses': len(self.model_cache.cache)},
         }
-
-
-# Singleton instance
-_shared_resources = None
-
-def get_shared_resources() -> SharedResources:
-    """Get the singleton shared resources instance"""
-    global _shared_resources
-    if _shared_resources is None:
-        _shared_resources = SharedResources()
-    return _shared_resources
-
-
-if __name__ == "__main__":
-    # Test shared resources
-    import sys
-    from pathlib import Path
-    sys.path.append(str(Path(__file__).parent.parent))
-
-    logging.basicConfig(level=logging.INFO)
-
-    resources = SharedResources()
-
-    # Test knowledge graph
-    node1 = KnowledgeNode(
-        node_id="node1",
-        node_type="concept",
-        content="Python async/await pattern",
-        metadata={"category": "concurrency"}
-    )
-    resources.add_knowledge_node(node1)
-
-    node2 = KnowledgeNode(
-        node_id="node2",
-        node_type="pattern",
-        content="Event-driven architecture",
-        metadata={"category": "architecture"}
-    )
-    resources.add_knowledge_node(node2)
-
-    resources.connect_knowledge_nodes("node1", "node2")
-
-    # Test pattern library
-    pattern = Pattern(
-        pattern_id="pattern1",
-        name="Async Refactoring",
-        description="Convert sync code to async",
-        category="refactoring",
-        code_template="async def {function_name}():\n    ...",
-        tags=["async", "performance"]
-    )
-    resources.add_pattern(pattern)
-    resources.update_pattern_outcome("pattern1", success=True, improvement=0.25)
-
-    # Test model cache
-    resources.cache_response("test prompt", "test response")
-    cached = resources.get_cached_response("test prompt")
-    print(f"Cached response: {cached}")
-
-    # Test metrics
-    resources.record_metric("test_coverage", "overall", 0.75)
-    resources.record_metric("complexity", "avg", 8.5)
-
-    # Save all
-    resources.save_all()
-
-    # Get stats
-    stats = resources.get_stats()
-    print(f"\nShared Resources Stats:")
-    print(json.dumps(stats, indent=2))

@@ -407,4 +407,258 @@ class AutonomousLearnerV2(AutonomousLearnerV1):
     def _init_config_values(self):
         """Initialize configuration values."""
         self.max_repos_per_question = ConfigLoader.get_value(self.config, 'max_repos_per_question')
-        self.max_files_per_repo
+        self.max_files_per_repo = ConfigLoader.get_value(self.config, 'max_files_per_repo')
+        self.cache_duration_hours = ConfigLoader.get_value(self.config, 'cache_duration_hours')
+
+    async def initialize_components_async(self):
+        """Initialize all components asynchronously."""
+        initializer = ComponentInitializer(self.config, self.logger)
+        self.components = await initializer.initialize_all_async()
+        return self.components
+
+    def get_code_embedder(self) -> CodeEmbedder:
+        """Get the code embedder instance."""
+        if 'code_embedder' in self.components:
+            return self.components['code_embedder']
+        return CodeEmbedder()
+
+    async def learn_from_question_async(self, question: Question) -> Dict[str, Any]:
+        """
+        Learn from a curiosity question using web and GitHub sources.
+
+        Args:
+            question: Curiosity question to explore
+
+        Returns:
+            Knowledge learned dict
+        """
+        self.logger.info(f"Learning from question: {question.content}")
+
+        # Get web knowledge (from V1)
+        web_knowledge = await self._get_web_knowledge_async(question)
+
+        # Get GitHub knowledge
+        github_knowledge = await self._get_github_knowledge_async(question)
+
+        # Merge knowledge
+        merged = KnowledgeMerger.merge(web_knowledge, github_knowledge)
+
+        # Store patterns in ChromaDB for future use
+        await self._store_learned_patterns_async(merged, question)
+
+        # Provide feedback to curiosity engine
+        if hasattr(self, 'curiosity') and self.curiosity:
+            feedback_provider = self.components.get('feedback_provider', FeedbackProvider())
+            await feedback_provider.provide_feedback_async(question, merged, self.curiosity)
+
+        return merged
+
+    async def _get_web_knowledge_async(self, question: Question) -> Optional[Dict[str, Any]]:
+        """Get knowledge from web search."""
+        try:
+            web_searcher = WebSearcher()
+            extractor = KnowledgeExtractor()
+            results = await asyncio.to_thread(web_searcher.search, question.content)
+            if results:
+                return await asyncio.to_thread(extractor.extract, question.content, results)
+        except Exception as e:
+            self.logger.error(f"Web knowledge extraction failed: {e}")
+        return None
+
+    async def _get_github_knowledge_async(self, question: Question) -> Optional[Dict[str, Any]]:
+        """Get knowledge from GitHub repositories."""
+        try:
+            if 'github_searcher' not in self.components:
+                return None
+
+            github_searcher = self.components['github_searcher']
+            repo_searcher = self.components['repo_searcher']
+
+            # Convert question to search terms
+            search_terms = await github_searcher.question_to_search_terms_async(question)
+
+            # Search repos
+            repos = await repo_searcher.search_repos_async(
+                search_terms,
+                max_repos=self.max_repos_per_question
+            )
+
+            if not repos:
+                return None
+
+            # Analyze repos
+            github_integration = self.components.get('github_integration')
+            if github_integration:
+                patterns = await self._extract_patterns_from_repos_async(repos, github_integration)
+                return {
+                    'summary': f'Analyzed {len(repos)} repositories for {question.content}',
+                    'key_concepts': patterns.get('concepts', []),
+                    'code_examples': patterns.get('examples', []),
+                    'related_topics': patterns.get('related', []),
+                    'implementation_ideas': patterns.get('patterns', []),
+                    'confidence': 0.7 if patterns else 0.3,
+                    'repos_analyzed': len(repos)
+                }
+        except Exception as e:
+            self.logger.error(f"GitHub knowledge extraction failed: {e}")
+        return None
+
+    async def _extract_patterns_from_repos_async(
+        self,
+        repos: List[str],
+        github_integration: GitHubIntegration
+    ) -> Dict[str, List[str]]:
+        """Extract code patterns from GitHub repositories."""
+        patterns = {
+            'concepts': [],
+            'examples': [],
+            'related': [],
+            'patterns': []
+        }
+
+        for repo_url in repos[:self.max_repos_per_question]:
+            try:
+                repo_patterns = await asyncio.to_thread(
+                    github_integration.analyze_repository,
+                    repo_url
+                )
+                if repo_patterns:
+                    patterns['concepts'].extend(repo_patterns.get('concepts', []))
+                    patterns['examples'].extend(repo_patterns.get('examples', []))
+                    patterns['patterns'].extend(repo_patterns.get('patterns', []))
+            except Exception as e:
+                self.logger.debug(f"Failed to analyze repo {repo_url}: {e}")
+
+        return patterns
+
+    async def _store_learned_patterns_async(
+        self,
+        knowledge: Dict[str, Any],
+        question: Question
+    ):
+        """
+        Store learned patterns in ChromaDB for future use by self-improvement.
+
+        This is the learning feedback loop - patterns learned here can be
+        retrieved during code improvement to inform better solutions.
+        """
+        code_embedder = self.get_code_embedder()
+
+        # Extract code patterns to store
+        patterns = knowledge.get('code_examples', []) + knowledge.get('implementation_ideas', [])
+
+        if not patterns:
+            return
+
+        try:
+            # Store in external knowledge collection
+            code_embedder.store_external_knowledge(
+                source=','.join(knowledge.get('sources', ['unknown'])),
+                patterns=patterns,
+                topic=question.content,
+                related_question=question.content
+            )
+            self.logger.info(f"Stored {len(patterns)} patterns for topic: {question.content[:50]}")
+        except Exception as e:
+            self.logger.error(f"Failed to store learned patterns: {e}")
+
+    def autonomous_learning_cycle(self, max_questions: int = 3) -> Dict[str, Any]:
+        """
+        Run one learning cycle (sync wrapper).
+
+        Args:
+            max_questions: Maximum questions to explore
+
+        Returns:
+            Learning cycle report
+        """
+        return asyncio.run(self.autonomous_learning_cycle_async(max_questions))
+
+    async def autonomous_learning_cycle_async(self, max_questions: int = 3) -> Dict[str, Any]:
+        """
+        Run one learning cycle asynchronously.
+
+        Args:
+            max_questions: Maximum questions to explore
+
+        Returns:
+            Learning cycle report
+        """
+        self.learning_cycle += 1
+        self.logger.info(f"Starting learning cycle {self.learning_cycle}")
+
+        # Initialize components if needed
+        if not self.components:
+            await self.initialize_components_async()
+
+        learned_this_cycle = []
+
+        # Get questions from curiosity engine
+        questions = []
+        if hasattr(self, 'curiosity') and self.curiosity:
+            questions = self.curiosity.generate_curiosity()[:max_questions]
+
+        # Learn from each question
+        for question in questions:
+            try:
+                knowledge = await self.learn_from_question_async(question)
+                if knowledge and knowledge.get('confidence', 0) > 0.3:
+                    learned_this_cycle.append({
+                        'question': question.content,
+                        'knowledge': knowledge,
+                        'source': ','.join(knowledge.get('sources', []))
+                    })
+                    self.learned_knowledge.append(knowledge)
+            except Exception as e:
+                self.logger.error(f"Failed to learn from question: {e}")
+
+        # Generate report
+        report = {
+            'cycle': self.learning_cycle,
+            'timestamp': datetime.now().isoformat(),
+            'learned_this_cycle': len(learned_this_cycle),
+            'total_knowledge': len(self.learned_knowledge),
+            'total_implemented': len(self.implemented_code),
+            'topics_learned': [item.get('knowledge', {}) for item in learned_this_cycle],
+            'stats': {
+                'questions_explored': len(questions),
+                'knowledge_acquired': len(learned_this_cycle)
+            }
+        }
+
+        self.logger.info(f"Learning cycle {self.learning_cycle} complete: {len(learned_this_cycle)} items learned")
+        return report
+
+
+def main():
+    """Test AutonomousLearnerV2"""
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+
+    print("=" * 70)
+    print("HUMAN 2.0 - Autonomous Learner V2")
+    print("=" * 70)
+
+    learner = AutonomousLearnerV2()
+
+    print("\nRunning learning cycle with GitHub integration...")
+    report = learner.autonomous_learning_cycle(max_questions=2)
+
+    print(f"\nResults:")
+    print(f"  Cycle: {report['cycle']}")
+    print(f"  Questions explored: {report['stats']['questions_explored']}")
+    print(f"  Knowledge learned: {report['learned_this_cycle']}")
+
+    report_path = Path(f"reports/learning_v2_cycle_{report['cycle']}.json")
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(report_path, 'w') as f:
+        json.dump(report, f, indent=2)
+
+    print(f"\nReport saved to: {report_path}")
+
+
+if __name__ == "__main__":
+    main()

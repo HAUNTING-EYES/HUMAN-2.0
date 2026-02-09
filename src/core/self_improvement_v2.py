@@ -317,8 +317,7 @@ class SelfImprovementV2:
 
         # Enhanced tester with auto-generation
         self.tester = EnhancedSafeCodeTester(self.test_generator)
-
-        # State tracking
+# State tracking
         self.improvement_history = []
         self.generation = 0
         self.stats = {
@@ -346,16 +345,17 @@ class SelfImprovementV2:
         Returns:
             Report dict with improvement statistics
         """
-        if max_files is None:
-            max_files = self.max_files_per_cycle
+        max_files = self._get_max_files(max_files)
+        self._log_improvement_start()
+        candidates = self._find_improvement_candidates(max_files)
+        self.logger.info(f"Found {len(candidates)} files to analyze")
 
+    def _get_max_files(self, max_files: Optional[int]) -> int:
+        return max_files if max_files is not None else self.max_files_per_cycle
+
+    def _log_improvement_start(self):
         self.logger.info(f"Starting self-improvement cycle V2 (Generation {self.generation})")
         self.logger.info(f"Target directories: {self.target_dirs}")
-
-        # 1. Find improvement candidates
-        candidates = self._find_improvement_candidates(max_files)
-
-        self.logger.info(f"Found {len(candidates)} files to analyze")
 
         # 2. Improve each file
         for file_path in candidates:

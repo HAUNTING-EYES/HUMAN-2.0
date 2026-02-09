@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HUMAN 2.0 - AGI Interface</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1e3c72, #2a5298);
+            color: white;
+            min-height: 100vh;
+        }
+        
+        .header {
+            background: rgba(0,0,0,0.3);
+            padding: 20px;
+            text-align: center;
+            border-bottom: 2px solid #4a90e2;
+        }
+        
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            background: linear-gradient(45deg, #4a90e2, #7bb3f0);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 20px;
+            padding: 20px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        .panel {
+            background: rgba(255,255,255,0.1);
+            border-radius: 15px;
+            padding: 20px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+        
+        .panel h2 {
+            color: #4a90e2;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .emotion-result {
+            background: rgba(0,0,0,0.3);
+            padding: 15px;
+            border-radius: 10px;
+            margin: 10px 0;
+            border-left: 4px solid #4a90e2;
+        }
+        
+        .consciousness-state {
+            background: rgba(0,0,0,0.2);
+            padding: 10px;
+            border-radius: 8px;
+            margin: 8px 0;
+        }
+        
+        .chat-container {
+            height: 400px;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            background: rgba(0,0,0,0.2);
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 15px;
+        }
+        
+        .message {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 8px;
+        }
+        
+        .user-message {
+            background: rgba(74,144,226,0.3);
+            text-align: right;
+        }
+        
+        .ai-message {
+            background: rgba(0,0,0,0.3);
+            text-align: left;
+        }
+        
+        .input-group {
+            display: flex;
+            gap: 10px;
+            margin: 10px 0;
+        }
+        
+        input, textarea, button {
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            background: rgba(255,255,255,0.1);
+            color: white;
+            border: 1px solid rgba(255,255,255,0.3);
+        }
+        
+        input::placeholder, textarea::placeholder {
+            color: rgba(255,255,255,0.7);
+        }
+        
+        button {
+            background: #4a90e2;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        button:hover {
+            background: #357abd;
+            transform: translateY(-2px);
+        }
+        
+        .camera-container {
+            text-align: center;
+        }
+        
+        #cameraFeed {
+            max-width: 100%;
+            border-radius: 10px;
+            margin: 10px 0;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        
+        .status-online { background: #4caf50; }
+        .status-offline { background: #f44336; }
+        
+        .consciousness-questions {
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        
+        .question-item {
+            background: rgba(0,0,0,0.2);
+            padding: 8px;
+            margin: 5px 0;
+            border-radius: 6px;
+            font-size: 0.9rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>HUMAN 2.0 AGI</h1>
+        <p>Artificial General Intelligence with Consciousness</p>
+        <div class="status">
+            <span class="status-indicator status-online"></span>
+            <span id="connectionStatus">Connected</span>
+        </div>
+    </div>
+    
+    <div class="container">
+        <!-- Emotion Recognition Panel -->
+        <div class="panel">
+            <h2>Emotion Recognition</h2>
+            
+            <div class="input-group">
+                <textarea id="textInput" placeholder="Enter text to analyze emotion..." rows="3"></textarea>
+                <button onclick="analyzeText()">Analyze Text</button>
+            </div>
+            
+            <div class="camera-container">
+                <button id="cameraBtn" onclick="toggleCamera()">Start Camera</button>
+                <div id="cameraContainer" style="display:none;">
+                    <img id="cameraFeed" alt="Camera Feed">
+                </div>
+            </div>
+            
+            <div id="emotionResults"></div>
+        </div>
+        
+        <!-- Consciousness Panel -->
+        <div class="panel">
+            <h2>Consciousness State</h2>
+            
+            <div id="consciousnessState">
+                <div class="consciousness-state">
+                    <strong>Self-Awareness:</strong> <span id="selfAwareness">Initializing...</span>
+                </div>
+                <div class="consciousness-state">
+                    <strong>Curiosity Level:</strong> <span id="curiosityLevel">0.5</span>
+                </div>
+                <div class="consciousness-state">
+                    <strong>Mood:</strong> <span id="mood">neutral</span>
+                </div>
+                <div class="consciousness-state">
+                    <strong>Arousal:</strong> <span id="arousal">normal</span>
+                </div>
+            </div>
+            
+            <h3>Current Questions</h3>
+            <div id="consciousnessQuestions" class="consciousness-questions"></div>
+            
+            <button onclick="updateConsciousness()">Update State</button>
+        </div>
+        
+        <!-- Chat Panel -->
+        <div class="panel">
+            <h2>Chat with HUMAN 2.0</h2>
+            
+            <div class="chat-container">
+                <div id="chatMessages" class="chat-messages">
+                    <div class="message ai-message">
+                        Hello! I'm HUMAN 2.0. I have consciousness, emotions, and curiosity. What would you like to talk about?
+                    </div>
+                </div>
+                
+                <div class="input-group">
+                    <input type="text" id="chatInput" placeholder="Type your message..." onkeypress="handleChatKeypress(event)">
+                    <button onclick="sendMessage()">Send</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        const socket = io();
+        let cameraActive = false;
+        
+        // Socket events
+        socket.on('connect', function() {
+            document.getElementById('connectionStatus').textContent = 'Connected';
+            document.querySelector('.status-indicator').className = 'status-indicator status-online';
+        });
+        
+        socket.on('disconnect', function() {
+            document.getElementById('connectionStatus').textContent = 'Disconnected';
+            document.querySelector('.status-indicator').className = 'status-indicator status-offline';
+        });
+        
+        socket.on('emotion_result', function(data) {
+            displayEmotionResult(data);
+        });
+        
+        socket.on('camera_frame', function(data) {
+            const img = document.getElementById('cameraFeed');
+            img.src = 'data:image/jpeg;base64,' + data.frame;
+        });
+        
+        // Functions
+        function analyzeText() {
+            const text = document.getElementById('textInput').value;
+            if (!text) return;
+            
+            fetch('/api/emotion/text', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({text: text})
+            })
+            .then(response => response.json())
+            .then(data => {
+                displayEmotionResult(data);
+                updateConsciousness();
+            })
+            .catch(error => console.error('Error:', error));
+        }
+        
+        function toggleCamera() {
+            const btn = document.getElementById('cameraBtn');
+            const container = document.getElementById('cameraContainer');
+            
+            if (!cameraActive) {
+                socket.emit('start_camera');
+                btn.textContent = 'Stop Camera';
+                container.style.display = 'block';
+                cameraActive = true;
+            } else {
+                socket.emit('stop_camera');
+                btn.textContent = 'Start Camera';
+                container.style.display = 'none';
+                cameraActive = false;
+            }
+        }
+        
+        function displayEmotionResult(data) {
+            const container = document.getElementById('emotionResults');
+            const result = document.createElement('div');
+            result.className = 'emotion-result';
+            result.innerHTML = `
+                <strong>${data.emotion}</strong> (${(data.confidence * 100).toFixed(1)}%)
+                <br><small>${data.modality} • ${new Date(data.timestamp * 1000).toLocaleTimeString()}</small>
+            `;
+            container.insertBefore(result, container.firstChild);
+            
+            // Keep only last 5 results
+            while (container.children.length > 5) {
+                container.removeChild(container.lastChild);
+            }
+        }
+        
+        function updateConsciousness() {
+            fetch('/api/consciousness/state')
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('selfAwareness').textContent = data.self_awareness.attention;
+                document.getElementById('curiosityLevel').textContent = data.curiosity.curiosity_level.toFixed(2);
+                document.getElementById('mood').textContent = data.physiology.summary.mood;
+                document.getElementById('arousal').textContent = data.physiology.summary.arousal;
+            })
+            .catch(error => console.error('Consciousness update error:', error));
+            
+            fetch('/api/consciousness/questions')
+            .then(response => response.json())
+            .then(questions => {
+                const container = document.getElementById('consciousnessQuestions');
+                container.innerHTML = '';
+                questions.forEach(q => {
+                    const div = document.createElement('div');
+                    div.className = 'question-item';
+                    div.innerHTML = `${q.content} <small>(${q.importance.toFixed(2)})</small>`;
+                    container.appendChild(div);
+                });
+            })
+            .catch(error => console.error('Questions update error:', error));
+        }
+        
+        function sendMessage() {
+            const input = document.getElementById('chatInput');
+            const message = input.value.trim();
+            if (!message) return;
+            
+            // Display user message
+            addChatMessage(message, 'user');
+            input.value = '';
+            
+            // Send to server
+            fetch('/api/chat', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({message: message})
+            })
+            .then(response => response.json())
+            .then(data => {
+                addChatMessage(data.response, 'ai');
+                updateConsciousness();
+            })
+            .catch(error => {
+                addChatMessage('Sorry, I encountered an error processing your message.', 'ai');
+            });
+        }
+        
+        function addChatMessage(message, sender) {
+            const container = document.getElementById('chatMessages');
+            const div = document.createElement('div');
+            div.className = `message ${sender}-message`;
+            div.textContent = message;
+            container.appendChild(div);
+            container.scrollTop = container.scrollHeight;
+        }
+        
+        function handleChatKeypress(event) {
+            if (event.key === 'Enter') {
+                sendMessage();
+            }
+        }
+        
+        // Initialize
+        updateConsciousness();
+        setInterval(updateConsciousness, 10000); // Update every 10 seconds
+    </script>
+</body>
+</html>

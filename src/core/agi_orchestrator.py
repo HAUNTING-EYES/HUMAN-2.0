@@ -33,6 +33,14 @@ from consciousness.self_awareness import SelfAwarenessSystem
 from consciousness.curiosity import CuriosityEngine
 from consciousness.reflection import ReflectionEngine
 
+# Knowledge persistence
+try:
+    from knowledge.network import KnowledgeNetwork
+    HAS_KNOWLEDGE_NETWORK = True
+except ImportError:
+    HAS_KNOWLEDGE_NETWORK = False
+    KnowledgeNetwork = None
+
 
 class AGIOrchestrator:
     """
@@ -54,6 +62,17 @@ class AGIOrchestrator:
         self.self_awareness = SelfAwarenessSystem()
         self.curiosity = CuriosityEngine()
         self.reflection = ReflectionEngine()
+
+        # Initialize knowledge network for persistent learning
+        self.knowledge_network = None
+        if HAS_KNOWLEDGE_NETWORK:
+            try:
+                self.knowledge_network = KnowledgeNetwork(
+                    storage_path="data/knowledge_network.json"
+                )
+                self.logger.info("KnowledgeNetwork initialized for persistent learning")
+            except Exception as e:
+                self.logger.warning(f"Could not initialize KnowledgeNetwork: {e}")
 
         self.is_running = False
         self.start_time = None
@@ -200,6 +219,24 @@ class AGIOrchestrator:
     async def _process_learning_report(self, learning_report: Dict[str, Any]):
         """Process learning report and update systems"""
         self._update_learning_stats(learning_report)
+
+        # Store learned knowledge in KnowledgeNetwork for persistence
+        if self.knowledge_network and learning_report.get('learned_this_cycle', 0) > 0:
+            topics = learning_report.get('topics_learned', [])
+            for topic in topics:
+                if isinstance(topic, dict):
+                    try:
+                        self.knowledge_network.add_knowledge(
+                            topic=topic.get('name', 'Unknown'),
+                            content=topic.get('summary', ''),
+                            source=topic.get('source', 'web'),
+                            confidence=topic.get('confidence', 0.7),
+                            importance=0.6,
+                            tags=topic.get('tags', [])
+                        )
+                    except Exception as e:
+                        self.logger.warning(f"Failed to store knowledge: {e}")
+
         self._reflect_on_experience({
             'type': 'autonomous_learning',
             'content': learning_report

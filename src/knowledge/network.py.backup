@@ -1,0 +1,608 @@
+"""
+HUMAN 2.0 - Knowledge Network
+Graph-based knowledge representation for exponential growth tracking.
+
+Features:
+- Knowledge nodes with topics and content
+- Edges representing relationships
+- Gap identification for learning suggestions
+- Growth rate calculation
+- Persistence to JSON
+"""
+
+import json
+import logging
+import math
+from pathlib import Path
+from typing import Dict, Any, List, Optional, Set, Tuple
+from dataclasses import dataclass, field, asdict
+from datetime import datetime, timedelta
+from collections import defaultdict
+from enum import Enum
+
+
+class RelationType(Enum):
+    """Types of relationships between knowledge nodes."""
+    DEPENDS_ON = "depends_on"      # A requires B
+    RELATED_TO = "related_to"      # A is related to B
+    EXTENDS = "extends"            # A extends/builds on B
+    CONTRADICTS = "contradicts"    # A contradicts B
+    EXAMPLE_OF = "example_of"      # A is an example of B
+    PART_OF = "part_of"           # A is part of B
+
+
+@dataclass
+class KnowledgeNode:
+    """A node in the knowledge graph."""
+    node_id: str
+    topic: str
+    content: str
+    source: str  # "github", "web", "internal", "generated"
+    confidence: float  # 0.0 to 1.0
+    importance: float  # 0.0 to 1.0
+    tags: List[str] = field(default_factory=list)
+    created_at: datetime = field(default_factory=datetime.now)
+    accessed_count: int = 0
+    last_accessed: datetime = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            'node_id': self.node_id,
+            'topic': self.topic,
+            'content': self.content,
+            'source': self.source,
+            'confidence': self.confidence,
+            'importance': self.importance,
+            'tags': self.tags,
+            'created_at': self.created_at.isoformat(),
+            'accessed_count': self.accessed_count,
+            'last_accessed': self.last_accessed.isoformat() if self.last_accessed else None
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'KnowledgeNode':
+        """Create from dictionary."""
+        data['created_at'] = datetime.fromisoformat(data['created_at'])
+        if data.get('last_accessed'):
+            data['last_accessed'] = datetime.fromisoformat(data['last_accessed'])
+        return cls(**data)
+
+
+@dataclass
+class KnowledgeEdge:
+    """An edge (relationship) between knowledge nodes."""
+    source_id: str
+    target_id: str
+    relation_type: RelationType
+    strength: float  # 0.0 to 1.0
+    created_at: datetime = field(default_factory=datetime.now)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for serialization."""
+        return {
+            'source_id': self.source_id,
+            'target_id': self.target_id,
+            'relation_type': self.relation_type.value,
+            'strength': self.strength,
+            'created_at': self.created_at.isoformat()
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'KnowledgeEdge':
+        """Create from dictionary."""
+        data['relation_type'] = RelationType(data['relation_type'])
+        data['created_at'] = datetime.fromisoformat(data['created_at'])
+        return cls(**data)
+
+
+class KnowledgeNetwork:
+    """
+    Graph-based knowledge representation.
+
+    Tracks:
+    - What has been learned (nodes)
+    - How knowledge is connected (edges)
+    - What gaps exist (missing connections)
+    - Growth rate over time
+
+    Enables:
+    - Smart learning suggestions
+    - Knowledge retrieval
+    - Exponential growth tracking
+    """
+
+    def __init__(self, storage_path: str = "data/knowledge_network.json"):
+        """
+        Initialize knowledge network.
+
+        Args:
+            storage_path: Path for persistence
+        """
+        self.storage_path = Path(storage_path)
+        self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+
+        self.logger = logging.getLogger(__name__)
+
+        # Core data structures
+        self.nodes: Dict[str, KnowledgeNode] = {}
+        self.edges: List[KnowledgeEdge] = []
+
+        # Indexes for fast lookup
+        self._topic_index: Dict[str, Set[str]] = defaultdict(set)  # topic -> node_ids
+        self._tag_index: Dict[str, Set[str]] = defaultdict(set)    # tag -> node_ids
+        self._adjacency: Dict[str, Set[str]] = defaultdict(set)    # node_id -> connected node_ids
+
+        # Growth tracking
+        self._growth_history: List[Tuple[datetime, int]] = []  # (timestamp, node_count)
+
+        # Load existing data
+        self._load()
+
+        self.logger.info(f"KnowledgeNetwork initialized with {len(self.nodes)} nodes")
+
+    def add_knowledge(
+        self,
+        topic: str,
+        content: str,
+        source: str = "internal",
+        confidence: float = 0.8,
+        importance: float = 0.5,
+        tags: List[str] = None,
+        related_topics: List[str] = None
+    ) -> str:
+        """
+        Add new knowledge to the network.
+
+        Args:
+            topic: Topic/title of the knowledge
+            content: Knowledge content
+            source: Where this knowledge came from
+            confidence: How confident we are (0-1)
+            importance: How important this is (0-1)
+            tags: Tags for categorization
+            related_topics: Related topic strings to link to
+
+        Returns:
+            Node ID of created node
+        """
+        tags = tags or []
+        related_topics = related_topics or []
+
+        # Generate ID
+        node_id = f"{topic.lower().replace(' ', '_')}_{len(self.nodes)}"
+
+        # Create node
+        node = KnowledgeNode(
+            node_id=node_id,
+            topic=topic,
+            content=content,
+            source=source,
+            confidence=confidence,
+            importance=importance,
+            tags=tags
+        )
+
+        # Add to graph
+        self.nodes[node_id] = node
+
+        # Update indexes
+        self._topic_index[topic.lower()].add(node_id)
+        for tag in tags:
+            self._tag_index[tag.lower()].add(node_id)
+
+        # Create edges to related topics
+        for related in related_topics:
+            self._create_relation(node_id, related)
+
+        # Auto-discover connections
+        self._discover_connections(node)
+
+        # Track growth
+        self._growth_history.append((datetime.now(), len(self.nodes)))
+
+        # Persist
+        self._save()
+
+        self.logger.debug(f"Added knowledge node: {node_id}")
+        return node_id
+
+    def _create_relation(self, source_id: str, target_topic: str):
+        """Create a relation between nodes."""
+        # Find target node by topic
+        target_ids = self._topic_index.get(target_topic.lower(), set())
+
+        for target_id in target_ids:
+            if target_id != source_id:
+                edge = KnowledgeEdge(
+                    source_id=source_id,
+                    target_id=target_id,
+                    relation_type=RelationType.RELATED_TO,
+                    strength=0.5
+                )
+                self.edges.append(edge)
+                self._adjacency[source_id].add(target_id)
+                self._adjacency[target_id].add(source_id)
+
+    def _discover_connections(self, node: KnowledgeNode):
+        """Auto-discover connections based on content similarity."""
+        # Simple keyword-based discovery
+        keywords = set(node.topic.lower().split() + node.tags)
+
+        for other_id, other_node in self.nodes.items():
+            if other_id == node.node_id:
+                continue
+
+            other_keywords = set(other_node.topic.lower().split() + other_node.tags)
+            overlap = keywords & other_keywords
+
+            if len(overlap) >= 2:  # At least 2 common keywords
+                strength = min(1.0, len(overlap) / 5.0)
+                edge = KnowledgeEdge(
+                    source_id=node.node_id,
+                    target_id=other_id,
+                    relation_type=RelationType.RELATED_TO,
+                    strength=strength
+                )
+                self.edges.append(edge)
+                self._adjacency[node.node_id].add(other_id)
+                self._adjacency[other_id].add(node.node_id)
+
+    def get_knowledge(self, node_id: str) -> Optional[KnowledgeNode]:
+        """Get a knowledge node by ID."""
+        node = self.nodes.get(node_id)
+        if node:
+            node.accessed_count += 1
+            node.last_accessed = datetime.now()
+        return node
+
+    def search_knowledge(
+        self,
+        query: str,
+        limit: int = 10
+    ) -> List[KnowledgeNode]:
+        """
+        Search for knowledge nodes.
+
+        Args:
+            query: Search query
+            limit: Maximum results
+
+        Returns:
+            List of matching nodes
+        """
+        query_terms = query.lower().split()
+        results = []
+
+        for node in self.nodes.values():
+            score = 0
+
+            # Topic match
+            for term in query_terms:
+                if term in node.topic.lower():
+                    score += 2
+
+# Tag match
+            node_tags_lower = [t.lower() for t in node.tags]
+            for term in query_terms:
+                if term in node_tags_lower:
+                    score += 1
+
+            # Content match (simple)
+            node_content_lower = node.content.lower()
+            for term in query_terms:
+                if term in node_content_lower:
+                    score += 0.5
+
+            if score > 0:
+                results.append((score, node))
+
+        # Sort by score and return top results
+        results.sort(key=lambda x: x[0], reverse=True)
+        return [node for _, node in results[:limit]]
+
+    def get_related(self, node_id: str, depth: int = 2) -> List[KnowledgeNode]:
+        """
+        Get related knowledge nodes (BFS traversal).
+
+        Args:
+            node_id: Starting node
+            depth: How many hops to traverse
+
+        Returns:
+            List of related nodes
+        """
+        if node_id not in self.nodes:
+            return []
+
+        visited = {node_id}
+        current_level = {node_id}
+        result = []
+
+        for _ in range(depth):
+            next_level = set()
+            for current_id in current_level:
+                neighbors = self._adjacency.get(current_id, set())
+                for neighbor_id in neighbors:
+                        next_level.add(neighbor_id)
+                        if neighbor_id in self.nodes:
+                            result.append(self.nodes[neighbor_id])
+            current_level = next_level
+
+        return result
+
+    def identify_gaps(self) -> List[Dict[str, Any]]:
+        """
+        Identify gaps in knowledge (topics that should be connected but aren't).
+
+        Returns:
+            List of gap descriptions with suggested topics
+        """
+        gaps = []
+
+        # Find isolated nodes (low connectivity)
+        for node_id, node in self.nodes.items():
+            connections = len(self._adjacency.get(node_id, set()))
+            if connections < 2 and node.importance > 0.5:
+                gaps.append({
+                    'type': 'isolated_important',
+                    'node': node.topic,
+                    'suggestion': f"Learn more about topics related to {node.topic}",
+                    'priority': node.importance
+                })
+
+        # Find missing connections between tags
+        tag_pairs = defaultdict(int)
+        for node in self.nodes.values():
+            for i, tag1 in enumerate(node.tags):
+                for tag2 in node.tags[i+1:]:
+                    key = tuple(sorted([tag1, tag2]))
+                    tag_pairs[key] += 1
+
+        # Find tag pairs that should be connected but have few connections
+        for (tag1, tag2), count in tag_pairs.items():
+            nodes1 = self._tag_index.get(tag1.lower(), set())
+            nodes2 = self._tag_index.get(tag2.lower(), set())
+
+            if len(nodes1) > 3 and len(nodes2) > 3 and count < 3:
+                gaps.append({
+                    'type': 'tag_gap',
+                    'tags': [tag1, tag2],
+                    'suggestion': f"Learn about intersection of {tag1} and {tag2}",
+                    'priority': 0.6
+                })
+
+        return sorted(gaps, key=lambda x: x['priority'], reverse=True)[:10]
+
+    def suggest_learning(self, count: int = 5) -> List[str]:
+        """
+        Suggest topics to learn next based on gaps and connections.
+
+        Args:
+            count: Number of suggestions
+
+        Returns:
+            List of suggested topics
+        """
+        suggestions = []
+
+        # Get gaps
+        gaps = self.identify_gaps()
+        for gap in gaps[:count]:
+            if gap['type'] == 'isolated_important':
+                suggestions.append(f"Expand knowledge on: {gap['node']}")
+            elif gap['type'] == 'tag_gap':
+                suggestions.append(f"Learn: {gap['tags'][0]} + {gap['tags'][1]} intersection")
+
+        # Add suggestions based on frequently accessed nodes
+        accessed_nodes = sorted(
+            self.nodes.values(),
+            key=lambda n: n.accessed_count,
+            reverse=True
+        )[:5]
+
+        for node in accessed_nodes:
+            if len(suggestions) >= count:
+                break
+            related_tags = node.tags[:2]
+            if related_tags:
+                suggestions.append(f"Deepen: {node.topic} ({', '.join(related_tags)})")
+
+        return suggestions[:count]
+
+    def get_growth_rate(self) -> float:
+        """
+        Calculate exponential growth rate.
+
+        Returns:
+            Growth rate (1.0 = no growth, >1.0 = growth)
+        """
+        if len(self._growth_history) < 2:
+            return 1.0
+
+        # Get last 7 days of growth
+        week_ago = datetime.now() - timedelta(days=7)
+        recent = [(t, c) for t, c in self._growth_history if t > week_ago]
+
+        if len(recent) < 2:
+            return 1.0
+
+        # Calculate growth rate
+        first_count = recent[0][1]
+        last_count = recent[-1][1]
+        days = (recent[-1][0] - recent[0][0]).days or 1
+
+        if first_count == 0:
+            return float(last_count)
+
+        # Daily growth rate
+        growth = (last_count / first_count) ** (1 / days)
+        return growth
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Get network statistics."""
+        growth_rate = self.get_growth_rate()
+
+        return {
+            'total_nodes': len(self.nodes),
+            'total_edges': len(self.edges),
+            'avg_connections': (
+                sum(len(adj) for adj in self._adjacency.values()) / len(self.nodes)
+                if self.nodes else 0
+            ),
+            'unique_topics': len(self._topic_index),
+            'unique_tags': len(self._tag_index),
+            'growth_rate': growth_rate,
+            'is_growing_exponentially': growth_rate > 1.1,
+            'sources': self._count_sources(),
+            'gaps_identified': len(self.identify_gaps())
+        }
+
+    def _count_sources(self) -> Dict[str, int]:
+        """Count nodes by source."""
+        sources = defaultdict(int)
+        for node in self.nodes.values():
+            sources[node.source] += 1
+        return dict(sources)
+
+    def _save(self):
+        """Save network to JSON."""
+        try:
+            data = {
+                'nodes': {k: v.to_dict() for k, v in self.nodes.items()},
+                'edges': [e.to_dict() for e in self.edges],
+                'growth_history': [
+                    (t.isoformat(), c) for t, c in self._growth_history[-1000:]
+                ]
+            }
+
+            with open(self.storage_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2)
+
+        except Exception as e:
+            self.logger.error(f"Failed to save network: {e}")
+
+    def _load(self):
+        """Load network from JSON."""
+        if not self.storage_path.exists():
+            return
+
+        try:
+            with open(self.storage_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            # Load nodes
+            for node_id, node_data in data.get('nodes', {}).items():
+                node = KnowledgeNode.from_dict(node_data)
+                self.nodes[node_id] = node
+
+                # Rebuild indexes
+                self._topic_index[node.topic.lower()].add(node_id)
+                for tag in node.tags:
+                    self._tag_index[tag.lower()].add(node_id)
+
+            # Load edges
+            for edge_data in data.get('edges', []):
+                edge = KnowledgeEdge.from_dict(edge_data)
+                self.edges.append(edge)
+                self._adjacency[edge.source_id].add(edge.target_id)
+                self._adjacency[edge.target_id].add(edge.source_id)
+
+            # Load growth history
+            for ts, count in data.get('growth_history', []):
+                self._growth_history.append((datetime.fromisoformat(ts), count))
+
+            self.logger.info(f"Loaded {len(self.nodes)} nodes from {self.storage_path}")
+
+        except Exception as e:
+            self.logger.error(f"Failed to load network: {e}")
+
+    def visualize_text(self) -> str:
+        """Generate text visualization of the network."""
+        lines = ["=" * 50, "KNOWLEDGE NETWORK", "=" * 50, ""]
+
+        # Stats
+        stats = self.get_stats()
+        lines.append(f"Nodes: {stats['total_nodes']}")
+        lines.append(f"Edges: {stats['total_edges']}")
+        lines.append(f"Growth Rate: {stats['growth_rate']:.2f}x")
+        lines.append(f"Growing Exponentially: {'YES' if stats['is_growing_exponentially'] else 'No'}")
+        lines.append("")
+
+        # Top topics by importance
+        lines.append("TOP KNOWLEDGE AREAS:")
+        top_nodes = sorted(
+            self.nodes.values(),
+            key=lambda n: n.importance * (1 + n.accessed_count / 10),
+            reverse=True
+        )[:10]
+
+        for node in top_nodes:
+            conn = len(self._adjacency.get(node.node_id, set()))
+            lines.append(f"  [{node.importance:.1f}] {node.topic} ({conn} connections)")
+
+        # Gaps
+        lines.append("")
+        lines.append("KNOWLEDGE GAPS:")
+        for gap in self.identify_gaps()[:5]:
+            lines.append(f"  - {gap['suggestion']}")
+
+        # Suggestions
+        lines.append("")
+        lines.append("LEARNING SUGGESTIONS:")
+        for suggestion in self.suggest_learning(5):
+            lines.append(f"  -> {suggestion}")
+
+        lines.append("")
+        lines.append("=" * 50)
+
+        return '\n'.join(lines)
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+
+    print("Testing Knowledge Network...")
+    network = KnowledgeNetwork(storage_path="temp/test_network.json")
+
+    # Add some knowledge
+    network.add_knowledge(
+        topic="Python Async Programming",
+        content="Asyncio, coroutines, event loops",
+        source="github",
+        importance=0.8,
+        tags=["python", "async", "concurrency"]
+    )
+
+    network.add_knowledge(
+        topic="Machine Learning Basics",
+        content="Neural networks, training, inference",
+        source="web",
+        importance=0.9,
+        tags=["ml", "ai", "python"]
+    )
+
+    network.add_knowledge(
+        topic="Web Scraping",
+        content="Beautiful Soup, Selenium, requests",
+        source="github",
+        importance=0.6,
+        tags=["python", "web", "automation"]
+    )
+
+    network.add_knowledge(
+        topic="FastAPI Framework",
+        content="Modern Python web framework with async support",
+        source="github",
+        importance=0.7,
+        tags=["python", "web", "async", "api"],
+        related_topics=["Python Async Programming"]
+    )
+
+    # Print visualization
+    print(network.visualize_text())
+
+    # Print stats
+    print("\nDetailed Stats:")
+    for key, value in network.get_stats().items():
+        print(f"  {key}: {value}")

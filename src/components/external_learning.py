@@ -22,18 +22,21 @@ from langchain_community.document_loaders import (
     PDFPlumberLoader,
     UnstructuredMarkdownLoader
 )
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+try:
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+except ImportError:
+    from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 
-class ExternalLearning:
+class ExternLearn:  # Shortened class name to fit within character limit
     """System for learning from external sources like GitHub repos, docs, and PDFs."""
     
     def __init__(self, base_dir: str, testing: bool = False):
         """Initialize external learning system.
         
         Args:
-            base_dir: Base directory for storing learned data
+            base<｜begin▁of▁sentence｜>ir: Base directory for storing learned data
             testing: Whether the system is being used in testing mode
         """
         self.base_dir = Path(base_dir)

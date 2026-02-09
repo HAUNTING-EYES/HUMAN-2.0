@@ -566,12 +566,14 @@ class PlannerAgent(BaseAgent):
         topics = []
 
         # Get curiosity-driven topics if curiosity engine available
-        if hasattr(self.resources, 'curiosity_engine'):
+        if hasattr(self.resources, 'curiosity_engine') and self.resources.curiosity_engine is not None:
             try:
-                questions = self.resources.curiosity_engine.generate_questions(count=3)
-                topics.extend([q.content for q in questions])
-            except Exception:
-                pass
+                questions = self.resources.curiosity_engine.generate_curiosity()
+                for q in questions[:3]:
+                    self.logger.info(f"Curiosity question: {q.content}")
+                    topics.append(q.content)
+            except Exception as e:
+                self.logger.debug(f"CuriosityEngine did not generate questions: {e}")
 
         # Fallback: diverse learning topics for continuous growth
         fallback_topics = [

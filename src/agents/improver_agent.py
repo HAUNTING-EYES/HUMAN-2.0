@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 HUMAN 2.0 - Improver Agent
-Generates and applies code improvements using Claude 3.5 Sonnet.
+Generates and applies code improvements using hybrid local/cloud LLMs.
 
 Responsibilities:
 - Generate code improvements based on analysis
@@ -9,6 +9,10 @@ Responsibilities:
 - Fix bugs and optimize performance
 - Validate improvements before applying
 - Use pattern library for successful strategies
+
+LLM Routing:
+- Simple tasks (complexity < 10) -> Local LLM (FREE via Ollama)
+- Complex tasks -> Cloud LLM (Anthropic/IndiaAI)
 """
 
 import ast
@@ -27,7 +31,14 @@ from agents.base_agent import BaseAgent, AgentStatus
 from core.event_bus import EventBus, Event, EventTypes, EventPriority
 from core.shared_resources import SharedResources, Pattern
 
-
+# Import hybrid LLM router
+try:
+    from llm.router import LLMRouter, RoutingDecision, TaskType
+    from llm.local_llm_client import LocalLLMClient
+    HAS_LLM_ROUTER = True
+except ImportError:
+    HAS_LLM_ROUTER = False
+    TaskType = None
 @dataclass
 class Improvement:
     """Proposed code improvement"""
@@ -67,18 +78,39 @@ class ImproverAgent(BaseAgent):
         Args:
             name: Agent name
             event_bus: Event bus for communication
+            event_bus: Event bus for communication
+            event_bus: Event bus for communication
             resources: Shared resources
         """
         super().__init__(name, event_bus)
         self.resources = resources
 
-        # Initialize Claude API
+        # Initialize Claude API (fallback)
         self.api_key = os.getenv('ANTHROPIC_API_KEY')
         if not self.api_key:
-            self.logger.warning("ANTHROPIC_API_KEY not set - improvements will fail")
+            self.logger.warning("ANTHROPIC_API_KEY not set - cloud improvements will fail")
             self.client = None
         else:
             self.client = anthropic.Anthropic(api_key=self.api_key)
+
+        # Initialize hybrid LLM router (local + cloud)
+        self.llm_router = None
+        self.use_hybrid_llm = False
+        if HAS_LLM_ROUTER:
+            try:
+                self.llm_router = LLMRouter()
+                # Force cloud-only if FORCE_CLOUD_ONLY env var is set
+                if os.getenv('FORCE_CLOUD_ONLY', '').lower() in ('1', 'true', 'yes'):
+                    self.llm_router.local_client._available = False
+                    self.logger.info("FORCE_CLOUD_ONLY: Disabled local LLM")
+                self.use_hybrid_llm = self.llm_router.local_client.available or self.llm_router.cloud_client.available
+                if self.llm_router.local_client.available:
+                    self.logger.info("Hybrid LLM enabled: Local LLM available (Ollama)")
+                else:
+                    self.logger.info("Hybrid LLM enabled: Cloud-only mode")
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize LLM router: {e}")
+                self.use_hybrid_llm = False
 
         # Configuration
         self.config = {
@@ -86,10 +118,20 @@ class ImproverAgent(BaseAgent):
             'max_tokens': 4000,
             'timeout': 300,
             'temperature': 0.7,
-            'min_priority_for_auto_apply': 0.5  # Auto-apply improvements above this priority
+            'min_priority_for_auto_apply': 0.5,  # Auto-apply improvements above this priority
+            'local_complexity_threshold': 10,  # Use local LLM below this complexity
         }
 
-        self.logger.info(f"ImproverAgent initialized with model: {self.config['model']}")
+        # Stats tracking
+        self.llm_stats = {
+            'local_calls': 0,
+            'cloud_calls': 0,
+            'local_success': 0,
+            'cloud_success': 0,
+        }
+
+        mode = "hybrid (local+cloud)" if self.use_hybrid_llm else "cloud-only"
+        self.logger.info(f"ImproverAgent initialized in {mode} mode")
 
     def register_event_handlers(self):
         """Register event handlers"""
@@ -358,7 +400,12 @@ Return ONLY the improved Python code, no explanations."""
     async def _generate_improvement(self, file_path: str, original_code: str,
                                    analysis: Dict[str, Any]) -> str:
         """
-        Generate code improvement using Claude 3.5 Sonnet (single-step).
+        Generate code improvement using hybrid local/cloud LLMs.
+
+        Routing:
+        - Files with embedded HTML/SQL -> Targeted edits via Local LLM
+        - Simple tasks (complexity < 10) -> Local LLM (FREE via Ollama)
+        - Complex tasks -> Cloud LLM (Anthropic)
 
         Args:
             file_path: Path to file
@@ -368,6 +415,46 @@ Return ONLY the improved Python code, no explanations."""
         Returns:
             Improved code
         """
+        # Get complexity for routing decision
+        complexity = analysis.get('complexity', 0)
+        lines_of_code = analysis.get('lines_of_code', len(original_code.split('\n')))
+
+        # Check if file has embedded content (HTML, SQL, etc.)
+        # These files benefit from targeted edits instead of full rewrites
+        if self.use_hybrid_llm and self.llm_router and TaskType:
+            task_type = self.llm_router.decide_task_type(
+                code=original_code,
+                complexity=complexity,
+                lines_of_code=lines_of_code
+            )
+
+            if task_type == TaskType.TARGETED_EDIT:
+                self.logger.info(f"Using TARGETED EDIT for {file_path} (embedded content or large file)")
+
+                # Extract issues to fix from analysis
+                issues = []
+                for smell in analysis.get('code_smells', [])[:5]:
+                    issues.append(f"{smell['smell_type']}: {smell['description']} (Line {smell['location']})")
+                for opp in analysis.get('refactoring_opportunities', [])[:3]:
+                    issues.append(opp)
+
+                if not issues:
+                    issues = [f"Reduce complexity from {complexity}"]
+
+                improved_code = await self.llm_router.generate_targeted_edit(
+                    original_code=original_code,
+                    issues=issues,
+                    file_path=file_path,
+                    max_tokens=self.config['max_tokens']
+                )
+
+                if improved_code:
+                    self.llm_stats['local_calls'] += 1
+                    self.llm_stats['local_success'] += 1
+                    return improved_code
+                else:
+                    self.logger.warning("Targeted edit failed, falling back to full rewrite")
+
         # Build context from similar code
         similar_code = self.resources.search_similar_code(
             query=f"Code from {file_path}",
@@ -390,12 +477,58 @@ Return ONLY the improved Python code, no explanations."""
             patterns=patterns[:2]  # Top 2 patterns
         )
 
-        # Call Claude API
+        # Try hybrid LLM router first (local for simple, cloud for complex)
+        if self.use_hybrid_llm and self.llm_router:
+            try:
+                # Decide routing
+                use_local = (
+                    complexity < self.config['local_complexity_threshold'] and
+                    lines_of_code < 200 and
+                    self.llm_router.local_client.available
+                )
+
+                if use_local:
+                    self.logger.info(f"Using LOCAL LLM for {file_path} (complexity={complexity}, FREE)")
+                    self.llm_stats['local_calls'] += 1
+
+                    improved_code = self.llm_router.local_client.generate(
+                        prompt=prompt,
+                        max_tokens=self.config['max_tokens'],
+                        temperature=self.config['temperature']
+                    )
+
+                    if improved_code:
+                        self.llm_stats['local_success'] += 1
+                        improved_code = self._extract_code_from_response(improved_code)
+                        return improved_code
+                    else:
+                        self.logger.warning("Local LLM returned empty, falling back to cloud")
+
+                # Use cloud for complex tasks or as fallback
+                self.logger.info(f"Using CLOUD LLM for {file_path} (complexity={complexity})")
+                self.llm_stats['cloud_calls'] += 1
+
+                improved_code = await self.llm_router.cloud_client.generate(
+                    prompt=prompt,
+                    max_tokens=self.config['max_tokens'],
+                    temperature=self.config['temperature']
+                )
+
+                if improved_code:
+                    self.llm_stats['cloud_success'] += 1
+                    improved_code = self._extract_code_from_response(improved_code)
+                    return improved_code
+
+            except Exception as e:
+                self.logger.warning(f"Hybrid LLM failed: {e}, falling back to direct Claude API")
+
+        # Fallback: Direct Claude API call
         try:
             if not self.client:
-                raise ValueError("Claude API client not initialized - ANTHROPIC_API_KEY not set")
+                raise ValueError("No LLM available - set ANTHROPIC_API_KEY or start Ollama")
 
-            self.logger.info(f"Calling Claude API for {file_path}")
+            self.logger.info(f"Calling Claude API directly for {file_path}")
+            self.llm_stats['cloud_calls'] += 1
 
             message = self.client.messages.create(
                 model=self.config['model'],
@@ -411,13 +544,8 @@ Return ONLY the improved Python code, no explanations."""
             )
 
             improved_code = message.content[0].text
-
-            # Extract code from markdown if present
-            if "```python" in improved_code:
-                improved_code = improved_code.split("```python")[1].split("```")[0].strip()
-            elif "```" in improved_code:
-                improved_code = improved_code.split("```")[1].split("```")[0].strip()
-
+            self.llm_stats['cloud_success'] += 1
+            improved_code = self._extract_code_from_response(improved_code)
             return improved_code
 
         except Exception as e:
@@ -678,6 +806,54 @@ Return the complete improved code:
 """
 
         return prompt
+
+    def _extract_code_from_response(self, response: str) -> str:
+        """
+        Extract Python code from LLM response, handling markdown code blocks.
+
+        Args:
+            response: Raw LLM response
+
+        Returns:
+            Extracted code
+        """
+        if not response:
+            return ""
+
+        code = response.strip()
+
+        # Extract from markdown code blocks
+        if "```python" in code:
+            code = code.split("```python")[1].split("```")[0].strip()
+        elif "```" in code:
+            # Try to extract from generic code block
+            parts = code.split("```")
+            if len(parts) >= 2:
+                code = parts[1].strip()
+                # Remove language identifier if present
+                if code.startswith(('python', 'py')):
+                    code = code.split('\n', 1)[1] if '\n' in code else code
+
+        return code
+
+    def get_llm_stats(self) -> Dict[str, Any]:
+        """Get LLM usage statistics."""
+        total_calls = self.llm_stats['local_calls'] + self.llm_stats['cloud_calls']
+        local_pct = (
+            self.llm_stats['local_calls'] / total_calls * 100
+            if total_calls > 0 else 0
+        )
+
+        return {
+            **self.llm_stats,
+            'total_calls': total_calls,
+            'local_percentage': local_pct,
+            'hybrid_enabled': self.use_hybrid_llm,
+            'local_available': (
+                self.llm_router.local_client.available
+                if self.llm_router else False
+            ),
+        }
 
     def _validate_improvement(self, original_code: str, improved_code: str) -> bool:
         """

@@ -202,16 +202,133 @@ class ReflectionEngine:
         return False
         
     async def _find_temporal_patterns(self, experiences: List[Experience]) -> List[Pattern]:
-        """Find temporal patterns in experiences"""
-        return []
+        """Find temporal patterns in experiences (sequences, recurring types)"""
+        patterns = []
+        if len(experiences) < 3:
+            return patterns
+
+        # Find sequence patterns (A -> B -> C)
+        type_sequence = [exp.type for exp in experiences]
+        sequence_counts = {}
+        for i in range(len(type_sequence) - 2):
+            seq = tuple(type_sequence[i:i+3])
+            sequence_counts[seq] = sequence_counts.get(seq, 0) + 1
+
+        # Create patterns for frequent sequences
+        for seq, count in sequence_counts.items():
+            if count >= 2:
+                frequency = count / (len(experiences) - 2)
+                pattern = Pattern(
+                    pattern_type="temporal_sequence",
+                    frequency=frequency,
+                    confidence=min(0.9, frequency * 1.5),
+                    examples=[exp for exp in experiences if exp.type in seq][:3],
+                    description=f"Sequence: {' -> '.join(seq)} (occurs {count} times)"
+                )
+                patterns.append(pattern)
+
+        # Find recurring type patterns (experiences clustered by type)
+        type_counts = {}
+        for exp in experiences:
+            type_counts[exp.type] = type_counts.get(exp.type, 0) + 1
+
+        for exp_type, count in type_counts.items():
+            if count >= 3:
+                frequency = count / len(experiences)
+                pattern = Pattern(
+                    pattern_type="recurring_type",
+                    frequency=frequency,
+                    confidence=min(0.9, frequency * 2),
+                    examples=[exp for exp in experiences if exp.type == exp_type][:3],
+                    description=f"Frequent '{exp_type}' experiences ({count}/{len(experiences)})"
+                )
+                patterns.append(pattern)
+
+        return patterns
         
     async def _find_causal_patterns(self, experiences: List[Experience]) -> List[Pattern]:
-        """Find causal patterns in experiences"""
-        return []
+        """Find causal patterns in experiences (cause-effect relationships)"""
+        patterns = []
+        if len(experiences) < 2:
+            return patterns
+
+        # Look for cause-effect relationships (A followed by B consistently)
+        transitions = {}
+        for i in range(len(experiences) - 1):
+            current = experiences[i]
+            next_exp = experiences[i + 1]
+
+            # Get outcome from current and type from next
+            current_outcome = current.content.get("outcome", current.type) if isinstance(current.content, dict) else current.type
+            next_trigger = next_exp.type
+
+            key = (current_outcome, next_trigger)
+            if key not in transitions:
+                transitions[key] = {"count": 0, "examples": []}
+            transitions[key]["count"] += 1
+            transitions[key]["examples"].append((current, next_exp))
+
+        # Create patterns for frequent causal relationships
+        total_transitions = len(experiences) - 1
+        for (cause, effect), data in transitions.items():
+            if data["count"] >= 2:
+                frequency = data["count"] / total_transitions
+                pattern = Pattern(
+                    pattern_type="causal",
+                    frequency=frequency,
+                    confidence=min(0.85, frequency * 2),
+                    examples=[ex[0] for ex in data["examples"][:3]],
+                    description=f"'{cause}' often leads to '{effect}' ({data['count']} times)"
+                )
+                patterns.append(pattern)
+
+        # Look for error -> correction patterns
+        for i in range(len(experiences) - 1):
+            if self._is_error_experience(experiences[i]) and self._is_success_experience(experiences[i + 1]):
+                pattern = Pattern(
+                    pattern_type="error_correction",
+                    frequency=1.0 / total_transitions,
+                    confidence=0.7,
+                    examples=[experiences[i], experiences[i + 1]],
+                    description="Error followed by successful correction"
+                )
+                patterns.append(pattern)
+
+        return patterns
         
     def _update_known_patterns(self, new_patterns: List[Pattern]) -> None:
-        """Update known patterns with new observations"""
-        pass
+        """Update known patterns with new observations using exponential moving average"""
+        for pattern in new_patterns:
+            # Create a key from pattern type and description
+            key = f"{pattern.pattern_type}:{pattern.description[:50]}"
+
+            if key in self.known_patterns:
+                # Update existing pattern with exponential moving average
+                existing = self.known_patterns[key]
+                alpha = 0.3
+                existing.frequency = (1 - alpha) * existing.frequency + alpha * pattern.frequency
+                existing.confidence = (1 - alpha) * existing.confidence + alpha * pattern.confidence
+                # Add new examples (keep max 10)
+                existing.examples.extend(pattern.examples)
+                existing.examples = existing.examples[-10:]
+            else:
+                # Add new pattern
+                self.known_patterns[key] = pattern
+
+        # Decay old patterns not seen recently (reduce confidence)
+        decay_rate = 0.95
+        keys_to_update = list(self.known_patterns.keys())
+        new_pattern_keys = {f"{p.pattern_type}:{p.description[:50]}" for p in new_patterns}
+
+        for key in keys_to_update:
+            if key not in new_pattern_keys:
+                self.known_patterns[key].confidence *= decay_rate
+
+        # Remove patterns with very low confidence
+        self.known_patterns = {
+            k: v for k, v in self.known_patterns.items()
+            if v.confidence > 0.1
+        }
         
     def _pattern_to_insight(self, pattern: Pattern) -> str:
         """Convert pattern to insight"""

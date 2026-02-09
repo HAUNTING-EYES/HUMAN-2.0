@@ -1,0 +1,630 @@
+#!/usr/bin/env python3
+"""
+Audio Emotion Recognition Model
+==============================
+
+This module implements audio emotion recognition models for the MELD dataset.
+Uses CNN+LSTM architecture to process mel spectrograms and classify emotions.
+
+Models:
+- AudioEmotionModel: CNN+LSTM architecture
+- AudioTransformerModel: Transformer-based architecture
+- AudioAttentionModel: CNN+Attention architecture
+"""
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import classification_report, confusion_matrix
+import wandb
+from tqdm import tqdm
+import os
+from pathlib import Path
+import pickle
+
+class AudioEmotionModel(nn.Module):
+    """
+    CNN+LSTM Audio Emotion Recognition Model
+    
+    Architecture:
+    - CNN layers for feature extraction from mel spectrograms
+    - LSTM layers for temporal modeling
+    - Fully connected layers for classification
+    """
+    
+    def __init__(self, num_emotions=7, input_channels=1, n_mels=128, hidden_size=256, num_lstm_layers=2, dropout=0.5):
+        super(AudioEmotionModel, self).__init__()
+        
+        self.num_emotions = num_emotions
+        self.hidden_size = hidden_size
+        self.num_lstm_layers = num_lstm_layers
+        
+        # CNN Feature Extraction
+        self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(32)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(64)
+        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
+        self.bn3 = nn.BatchNorm2d(128)
+        self.conv4 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
+        self.bn4 = nn.BatchNorm2d(256)
+        
+        # Max pooling
+        self.pool = nn.MaxPool2d(2, 2)
+        
+        # Dropout
+        self.dropout = nn.Dropout(dropout)
+        
+        # Calculate CNN output size
+        # Input: (batch, 1, n_mels, time_steps)
+        # After 4 conv layers with max pooling: (batch, 256, n_mels//16, time_steps//16)
+        cnn_output_size = 256 * (n_mels // 16) * 8  # Assuming time_steps=128
+        
+        # LSTM layers
+        self.lstm = nn.LSTM(
+            input_size=cnn_output_size,
+            hidden_size=hidden_size,
+            num_layers=num_lstm_layers,
+            batch_first=True,
+            dropout=dropout if num_lstm_layers > 1 else 0,
+            bidirectional=True
+        )
+        
+        # Classifier
+        self.classifier = nn.Sequential(
+            nn.Linear(hidden_size * 2, hidden_size),  # *2 for bidirectional
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size // 2, num_emotions)
+        )
+        
+        # Initialize weights
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        """Initialize model weights"""
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
+    
+    def forward(self, x):
+        """
+        Forward pass
+        
+        Args:
+            x: Input mel spectrogram (batch, channels, n_mels, time_steps)
+        
+        Returns:
+            logits: Emotion classification logits (batch, num_emotions)
+        """
+        batch_size = x.size(0)
+        
+        # CNN feature extraction
+        x = self.pool(F.relu(self.bn1(self.conv1(x))))
+        x = self.dropout(x)
+        
+        x = self.pool(F.relu(self.bn2(self.conv2(x))))
+        x = self.dropout(x)
+        
+        x = self.pool(F.relu(self.bn3(self.conv3(x))))
+        x = self.dropout(x)
+        
+        x = self.pool(F.relu(self.bn4(self.conv4(x))))
+        x = self.dropout(x)
+        
+        # Reshape for LSTM: (batch, time_steps, features)
+        x = x.view(batch_size, x.size(1), -1).transpose(1, 2)
+        
+        # LSTM processing
+        lstm_out, _ = self.lstm(x)
+        
+        # Global average pooling over time dimension
+        x = torch.mean(lstm_out, dim=1)
+        
+        # Classification
+        logits = self.classifier(x)
+        
+        return logits
+
+class AudioTransformerModel(nn.Module):
+    """
+    Transformer-based Audio Emotion Recognition Model
+    
+    Architecture:
+    - CNN feature extractor
+    - Transformer encoder layers
+    - Classification head
+    """
+    
+    def __init__(self, num_emotions=7, input_channels=1, n_mels=128, d_model=256, nhead=8, num_layers=6, dropout=0.1):
+        super(AudioTransformerModel, self).__init__()
+        
+        self.num_emotions = num_emotions
+        self.d_model = d_model
+        
+        # CNN feature extractor
+        self.feature_extractor = nn.Sequential(
+            nn.Conv2d(input_channels, 64, 3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),
+            nn.Dropout(dropout),
+            
+            nn.Conv2d(64, 128, 3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),
+            nn.Dropout(dropout),
+            
+            nn.Conv2d(128, 256, 3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),
+            nn.Dropout(dropout),
+            
+            nn.AdaptiveAvgPool2d((1, d_model))
+        )
+        
+        # Positional encoding
+        self.pos_encoder = nn.Parameter(torch.randn(1, 1000, d_model))
+        
+        # Transformer encoder
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=d_model * 4,
+            dropout=dropout,
+            batch_first=True
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        
+        # Classification head
+        self.classifier = nn.Sequential(
+            nn.Linear(d_model, d_model // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model // 2, num_emotions)
+        )
+        
+        # Initialize weights
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        """Initialize model weights"""
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
+    
+    def forward(self, x):
+        """
+        Forward pass
+        
+        Args:
+            x: Input mel spectrogram (batch, channels, n_mels, time_steps)
+        
+        Returns:
+            logits: Emotion classification logits (batch, num_emotions)
+        """
+        batch_size = x.size(0)
+        
+        # Extract features
+        features = self.feature_extractor(x)  # (batch, 1, d_model)
+        features = features.squeeze(1)  # (batch, d_model)
+        
+        # Add positional encoding
+        seq_len = features.size(1)
+        pos_encoding = self.pos_encoder[:, :seq_len, :]
+        features = features + pos_encoding
+        
+        # Transformer processing
+        transformer_out = self.transformer(features)
+        
+        # Global average pooling
+        pooled = torch.mean(transformer_out, dim=1)
+        
+        # Classification
+        logits = self.classifier(pooled)
+        
+        return logits
+
+class AudioAttentionModel(nn.Module):
+    """
+    CNN+Attention Audio Emotion Recognition Model
+    
+    Architecture:
+    - CNN layers for feature extraction
+    - Self-attention mechanism
+    - Classification head
+    """
+    
+    def __init__(self, num_emotions=7, input_channels=1, n_mels=128, hidden_size=256, num_heads=8, dropout=0.5):
+        super(AudioAttentionModel, self).__init__()
+        
+        self.num_emotions = num_emotions
+        self.hidden_size = hidden_size
+        
+        # CNN feature extraction
+        self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(32)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(64)
+        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
+        self.bn3 = nn.BatchNorm2d(128)
+        
+        self.pool = nn.MaxPool2d(2, 2)
+        self.dropout = nn.Dropout(dropout)
+        
+        # Calculate CNN output size
+        cnn_output_size = 128 * (n_mels // 8) * 16  # Assuming time_steps=128
+        
+        # Projection to hidden size
+        self.projection = nn.Linear(cnn_output_size, hidden_size)
+        
+        # Multi-head attention
+        self.attention = nn.MultiheadAttention(
+            embed_dim=hidden_size,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True
+        )
+        
+        # Layer normalization
+        self.layer_norm = nn.LayerNorm(hidden_size)
+        
+        # Classifier
+        self.classifier = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_size // 2, num_emotions)
+        )
+        
+        # Initialize weights
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        """Initialize model weights"""
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, 0, 0.01)
+                nn.init.constant_(m.bias, 0)
+    
+    def forward(self, x):
+        """
+        Forward pass
+        
+        Args:
+            x: Input mel spectrogram (batch, channels, n_mels, time_steps)
+        
+        Returns:
+            logits: Emotion classification logits (batch, num_emotions)
+        """
+        batch_size = x.size(0)
+        
+        # CNN feature extraction
+        x = self.pool(F.relu(self.bn1(self.conv1(x))))
+        x = self.dropout(x)
+        
+        x = self.pool(F.relu(self.bn2(self.conv2(x))))
+        x = self.dropout(x)
+        
+        x = self.pool(F.relu(self.bn3(self.conv3(x))))
+        x = self.dropout(x)
+        
+        # Reshape and project
+        x = x.view(batch_size, x.size(1), -1).transpose(1, 2)  # (batch, time_steps, features)
+        x = self.projection(x)  # (batch, time_steps, hidden_size)
+        
+        # Self-attention
+        attended, _ = self.attention(x, x, x)
+        attended = self.layer_norm(attended + x)  # Residual connection
+        
+        # Global average pooling
+        x = torch.mean(attended, dim=1)
+        
+        # Classification
+        logits = self.classifier(x)
+        
+        return logits
+
+def train_audio_model(model, train_loader, val_loader, num_epochs=50, learning_rate=0.001, device='cuda', model_name='audio_emotion_model'):
+    """
+    Train audio emotion recognition model
+    
+    Args:
+        model: Audio emotion model
+        train_loader: Training data loader
+        val_loader: Validation data loader
+        num_epochs: Number of training epochs
+        learning_rate: Learning rate
+        device: Device to train on
+        model_name: Name for saving the model
+    """
+    
+    # Initialize wandb
+    wandb.init(
+        project="human2-audio-emotion",
+        name=model_name,
+        config={
+            "model_type": model.__class__.__name__,
+            "num_epochs": num_epochs,
+            "learning_rate": learning_rate,
+            "batch_size": train_loader.batch_size,
+            "device": device
+        }
+    )
+    
+    # Move model to device
+    model = model.to(device)
+    
+    # Loss function and optimizer
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=0.01)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', patience=5, factor=0.5)
+    
+    # Training history
+    train_losses = []
+    val_losses = []
+    train_accuracies = []
+    val_accuracies = []
+    
+    best_val_accuracy = 0.0
+    
+    print(f"Training {model.__class__.__name__} for {num_epochs} epochs...")
+    
+    for epoch in range(num_epochs):
+        # Training phase
+        model.train()
+        train_loss = 0.0
+        train_correct = 0
+        train_total = 0
+        
+        train_pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Train]")
+        for batch in train_pbar:
+            audio = batch['audio'].to(device)
+            emotions = batch['emotion'].to(device)
+            
+            # Forward pass
+            optimizer.zero_grad()
+            outputs = model(audio)
+            loss = criterion(outputs, emotions)
+            
+            # Backward pass
+            loss.backward()
+            optimizer.step()
+            
+            # Statistics
+            train_loss += loss.item()
+            _, predicted = torch.max(outputs.data, 1)
+            train_total += emotions.size(0)
+            train_correct += (predicted == emotions).sum().item()
+            
+            train_pbar.set_postfix({
+                'Loss': f"{loss.item():.4f}",
+                'Acc': f"{100 * train_correct / train_total:.2f}%"
+            })
+        
+        train_accuracy = 100 * train_correct / train_total
+        train_losses.append(train_loss / len(train_loader))
+        train_accuracies.append(train_accuracy)
+        
+        # Validation phase
+        model.eval()
+        val_loss = 0.0
+        val_correct = 0
+        val_total = 0
+        all_predictions = []
+        all_emotions = []
+        
+        with torch.no_grad():
+            val_pbar = tqdm(val_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Val]")
+            for batch in val_pbar:
+                audio = batch['audio'].to(device)
+                emotions = batch['emotion'].to(device)
+                
+                outputs = model(audio)
+                loss = criterion(outputs, emotions)
+                
+                val_loss += loss.item()
+                _, predicted = torch.max(outputs.data, 1)
+                val_total += emotions.size(0)
+                val_correct += (predicted == emotions).sum().item()
+                
+                all_predictions.extend(predicted.cpu().numpy())
+                all_emotions.extend(emotions.cpu().numpy())
+                
+                val_pbar.set_postfix({
+                    'Loss': f"{loss.item():.4f}",
+                    'Acc': f"{100 * val_correct / val_total:.2f}%"
+                })
+        
+        val_accuracy = 100 * val_correct / val_total
+        val_losses.append(val_loss / len(val_loader))
+        val_accuracies.append(val_accuracy)
+        
+        # Learning rate scheduling
+        scheduler.step(val_accuracy)
+        
+        # Log to wandb
+        wandb.log({
+            'epoch': epoch + 1,
+            'train_loss': train_losses[-1],
+            'val_loss': val_losses[-1],
+            'train_accuracy': train_accuracy,
+            'val_accuracy': val_accuracy,
+            'learning_rate': optimizer.param_groups[0]['lr']
+        })
+        
+        # Save best model
+        if val_accuracy > best_val_accuracy:
+            best_val_accuracy = val_accuracy
+            torch.save({
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'val_accuracy': val_accuracy,
+                'train_accuracy': train_accuracy,
+                'train_loss': train_losses[-1],
+                'val_loss': val_losses[-1]
+            }, f'models/{model_name}_best.pth')
+            print(f"Saved best model with validation accuracy: {val_accuracy:.2f}%")
+        
+        print(f"Epoch {epoch+1}/{num_epochs}: "
+              f"Train Loss: {train_losses[-1]:.4f}, Train Acc: {train_accuracy:.2f}%, "
+              f"Val Loss: {val_losses[-1]:.4f}, Val Acc: {val_accuracy:.2f}%")
+    
+    # Save final model
+    torch.save({
+        'epoch': num_epochs,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'val_accuracy': val_accuracy,
+        'train_accuracy': train_accuracy,
+        'train_loss': train_losses[-1],
+        'val_loss': val_losses[-1]
+    }, f'models/{model_name}_final.pth')
+    
+    # Plot training history
+    plot_training_history(train_losses, val_losses, train_accuracies, val_accuracies, model_name)
+    
+    # Generate classification report
+    generate_classification_report(all_emotions, all_predictions, train_loader.dataset.label_encoder, model_name)
+    
+    wandb.finish()
+    
+    return model
+
+def plot_training_history(train_losses, val_losses, train_accuracies, val_accuracies, model_name):
+    """Plot training history"""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+    
+    # Loss plot
+    ax1.plot(train_losses, label='Train Loss')
+    ax1.plot(val_losses, label='Validation Loss')
+    ax1.set_title('Training and Validation Loss')
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('Loss')
+    ax1.legend()
+    ax1.grid(True)
+    
+    # Accuracy plot
+    ax2.plot(train_accuracies, label='Train Accuracy')
+    ax2.plot(val_accuracies, label='Validation Accuracy')
+    ax2.set_title('Training and Validation Accuracy')
+    ax2.set_xlabel('Epoch')
+    ax2.set_ylabel('Accuracy (%)')
+    ax2.legend()
+    ax2.grid(True)
+    
+    plt.tight_layout()
+    plt.savefig(f'models/{model_name}_training_history.png', dpi=300, bbox_inches='tight')
+    plt.show()
+
+def generate_classification_report(true_labels, predictions, label_encoder, model_name):
+    """Generate and save classification report"""
+    # Convert numeric labels back to emotion names
+    emotion_names = label_encoder.classes_
+    true_emotions = [emotion_names[label] for label in true_labels]
+    pred_emotions = [emotion_names[label] for label in predictions]
+    
+    # Generate classification report
+    report = classification_report(true_emotions, pred_emotions, output_dict=True)
+    
+    # Save report
+    with open(f'models/{model_name}_classification_report.txt', 'w') as f:
+        f.write("Audio Emotion Recognition Classification Report\n")
+        f.write("=" * 50 + "\n\n")
+        f.write(classification_report(true_emotions, pred_emotions))
+    
+    # Plot confusion matrix
+    cm = confusion_matrix(true_emotions, pred_emotions, labels=emotion_names)
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=emotion_names, yticklabels=emotion_names)
+    plt.title('Confusion Matrix - Audio Emotion Recognition')
+    plt.xlabel('Predicted')
+    plt.ylabel('True')
+    plt.tight_layout()
+    plt.savefig(f'models/{model_name}_confusion_matrix.png', dpi=300, bbox_inches='tight')
+    plt.show()
+    
+    print(f"Classification report saved to models/{model_name}_classification_report.txt")
+    print(f"Confusion matrix saved to models/{model_name}_confusion_matrix.png")
+
+def test_audio_model(model, test_loader, device='cuda', model_name='audio_emotion_model'):
+    """Test audio emotion recognition model"""
+    model.eval()
+    test_correct = 0
+    test_total = 0
+    all_predictions = []
+    all_emotions = []
+    
+    print("Testing audio emotion recognition model...")
+    
+    with torch.no_grad():
+        for batch in tqdm(test_loader, desc="Testing"):
+            audio = batch['audio'].to(device)
+            emotions = batch['emotion'].to(device)
+            
+            outputs = model(audio)
+            _, predicted = torch.max(outputs.data, 1)
+            
+            test_total += emotions.size(0)
+            test_correct += (predicted == emotions).sum().item()
+            
+            all_predictions.extend(predicted.cpu().numpy())
+            all_emotions.extend(emotions.cpu().numpy())
+    
+    test_accuracy = 100 * test_correct / test_total
+    print(f"Test Accuracy: {test_accuracy:.2f}%")
+    
+    # Generate test report
+    generate_classification_report(all_emotions, all_predictions, test_loader.dataset.label_encoder, f"{model_name}_test")
+    
+    return test_accuracy
+
+if __name__ == "__main__":
+    # Example usage
+    print("Audio Emotion Recognition Model")
+    print("=" * 40)
+    
+    # Create model
+    model = AudioEmotionModel()
+    print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
+    
+    # Test forward pass
+    dummy_input = torch.randn(2, 1, 128, 128)
+    with torch.no_grad():
+        output = model(dummy_input)
+    print(f"Input shape: {dummy_input.shape}")
+    print(f"Output shape: {output.shape}")
+    print(f"Output sample: {output[0]}") 

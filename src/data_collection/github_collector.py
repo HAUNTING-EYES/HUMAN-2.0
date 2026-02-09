@@ -35,8 +35,9 @@ class GitHubDataCollector:
         self.documentation_dir = self.data_dir / 'documentation'
         self.examples_dir = self.data_dir / 'examples'
         
-        for directory in [self.data_dir, self.code_patterns_dir, 
-                         self.documentation_dir, self.examples_dir]:
+        directories = [self.data_dir, self.code_patterns_dir, 
+                      self.documentation_dir, self.examples_dir]
+        for directory in directories:
             directory.mkdir(parents=True, exist_ok=True)
             
     async def collect_from_repositories_async(self, repo_list: List[str], max_files: int = 100):
@@ -64,7 +65,7 @@ class GitHubDataCollector:
         try:
             repository = self._get_repository(repo_url)
             repo_data = self._create_repo_data_structure(repository, repo_url)
-            self._process_repository_contents(repository, repo_data, max_files)
+            await self._process_repository_contents_async(repository, repo_data, max_files)
             await self._save_repository_data_async(repo_data)
         except Exception as e:
             self.logger.error(f"Error collecting data from {repo_url}: {str(e)}")
@@ -94,6 +95,13 @@ class GitHubDataCollector:
             'documentation': [],
             'examples': []
         }
+    
+    async def _process_repository_contents_async(self, repository: Repository, repo_data: Dict[str, Any], max_files: int):
+        try:
+            contents = self._get_repository_contents(repository)
+            await self._process_files_async(contents, repo_data, max_files)
+        except Exception as e:
+            self.logger.error(f"Error processing repository contents: {str(e)}")
                 
     def _process_repository_contents(self, repository: Repository, repo_data: Dict[str, Any], max_files: int):
         try:
@@ -106,14 +114,33 @@ class GitHubDataCollector:
         contents = repository.get_contents("")
         return contents if isinstance(contents, list) else [contents]
     
+    async def _process_files_async(self, contents: List[ContentFile], repo_data: Dict[str, Any], max_files: int):
+        file_count = 0
+        for content in contents:
+            if file_count >= max_files:
+                break
+            
+            if await self._process_single_file_async(content, repo_data):
+                file_count += 1
+    
     def _process_files(self, contents: List[ContentFile], repo_data: Dict[str, Any], max_files: int):
         file_count = 0
         for content in contents:
             if file_count >= max_files:
                 break
             
-            if content.type == "file" and self._process_single_file(content, repo_data):
+            if self._process_single_file(content, repo_data):
                 file_count += 1
+    
+    async def _process_single_file_async(self, content: ContentFile, repo_data: Dict[str, Any]) -> bool:
+        try:
+            file_content = content.decoded_content.decode('utf-8')
+            file_type = self._get_file_extension(content.name)
+            self._categorize_and_store_file(content.name, file_content, file_type, repo_data)
+            return True
+        except Exception as e:
+            self.logger.warning(f"Error processing file {content.path}: {str(e)}")
+            return False
     
     def _process_single_file(self, content: ContentFile, repo_data: Dict[str, Any]) -> bool:
         try:
@@ -137,7 +164,10 @@ class GitHubDataCollector:
         
         for category, (extensions, handler) in category_handlers.items():
             if file_type in extensions:
-                processed_data = handler(filename, content, file_type) if category == 'code_patterns' else handler(filename, content)
+                if category == 'code_patterns':
+                    processed_data = handler(filename, content, file_type)
+                else:
+                    processed_data = handler(filename, content)
                 repo_data[category].append(processed_data)
                 break
             
@@ -188,14 +218,16 @@ class GitHubDataCollector:
         
     def _extract_tags(self, content: str) -> List[str]:
         tags = set()
-        for line in content.split('\n'):
+        lines = content.split('\n')
+        for line in lines:
             for tag, keywords in self.TAG_KEYWORDS.items():
                 if any(keyword in line for keyword in keywords):
                     tags.add(tag)
         return list(tags)
         
     def _calculate_complexity(self, content: str) -> int:
-        return sum(1 for line in content.split('\n') 
+        lines = content.split('\n')
+        return sum(1 for line in lines 
                    if any(keyword in line for keyword in self.COMPLEXITY_KEYWORDS))
         
     def _calculate_quality_score(self, content: str) -> float:

@@ -134,8 +134,8 @@ class SelfMonitor:
         api_quota, cpu, memory = self._get_resource_usage()
 
         # Get knowledge metrics
-        knowledge_nodes = len(self.resources.knowledge_graph)
-        patterns = len(self.resources.pattern_library)
+        knowledge_nodes = len(getattr(self.resources.knowledge_graph, 'graph', self.resources.knowledge_graph))
+        patterns = len(getattr(self.resources.pattern_library, 'library', self.resources.pattern_library))
         external = self.resources.code_embedder.external_knowledge_collection.count()
 
         # Identify gaps and opportunities
@@ -292,7 +292,7 @@ class SelfMonitor:
         if self._calculate_test_coverage() < 0.75:
             opportunities.append("Many untested files - easy coverage gains")
 
-        if len(self.resources.pattern_library) < 10:
+        if len(getattr(self.resources.pattern_library, 'library', self.resources.pattern_library)) < 10:
             opportunities.append("Few patterns discovered - potential for pattern mining")
 
         return opportunities

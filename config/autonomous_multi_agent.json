@@ -1,0 +1,117 @@
+{
+  "autonomous_mode": {
+    "enabled": true,
+    "consciousness_loop_interval": 300,
+    "enable_goal_generation": true,
+    "enable_strategic_planning": true,
+    "max_cycles": null,
+    "sleep_between_cycles": 60
+  },
+
+  "agents": {
+    "analyzer": {
+      "enabled": true,
+      "max_complexity": 10,
+      "min_maintainability": 65,
+      "max_function_length": 50,
+      "max_class_length": 300
+    },
+    "improver": {
+      "enabled": true,
+      "llm_model": "claude-sonnet-4-5-20250929",
+      "max_tokens": 4000,
+      "timeout": 300,
+      "temperature": 0.7,
+      "min_priority_for_auto_apply": 0.2
+    },
+    "tester": {
+      "enabled": true,
+      "auto_generate_tests": true,
+      "min_coverage": 0.75,
+      "test_dir": "tests"
+    },
+    "learner": {
+      "enabled": true,
+      "max_repos_per_search": 3,
+      "max_learning_topics_per_cycle": 2,
+      "min_relevance_score": 0.6
+    },
+    "meta_learning": {
+      "enabled": true,
+      "min_samples_for_optimization": 10,
+      "pattern_discovery_threshold": 0.8,
+      "learning_rate": 0.1
+    },
+    "planner": {
+      "enabled": true,
+      "strategic_plan_interval": 10,
+      "vision_plan_interval": 20,
+      "max_files_per_cycle": 10,
+      "max_learning_topics_per_cycle": 2
+    },
+    "coordinator": {
+      "enabled": true,
+      "max_parallel_tasks": 10,
+      "task_timeout": 300,
+      "enable_conflict_resolution": true
+    },
+    "monitor": {
+      "enabled": true,
+      "health_check_interval": 60,
+      "max_api_calls_per_hour": 1000,
+      "cpu_warning_threshold": 80,
+      "memory_warning_threshold": 80,
+      "anomaly_detection_enabled": true
+    }
+  },
+
+  "consciousness": {
+    "goal_engine": {
+      "max_active_goals": 5,
+      "min_goal_priority": 0.3,
+      "coverage_target": 0.75,
+      "complexity_target": 8.0,
+      "curiosity_enabled": true
+    },
+    "self_monitor": {
+      "healthy_coverage_threshold": 0.75,
+      "healthy_complexity_threshold": 10.0,
+      "healthy_success_rate": 0.7,
+      "assessment_retention": 100
+    }
+  },
+
+  "shared_resources": {
+    "chroma_dir": "data/unified_chroma_db",
+    "knowledge_graph_path": "data/knowledge_graph.json",
+    "pattern_library_path": "data/pattern_library.json",
+    "model_cache_path": "data/model_cache.json",
+    "metrics_db_path": "data/metrics_db.json"
+  },
+
+  "planning": {
+    "cycle_plan_enabled": true,
+    "strategic_plan_cycles": 10,
+    "vision_plan_cycles": 20
+  },
+
+  "safety": {
+    "multi_layer_validation": true,
+    "automatic_rollback": true,
+    "checkpoint_every_n_cycles": 5,
+    "max_improvements_per_cycle": 10,
+    "require_tests_before_apply": true
+  },
+
+  "api_keys": {
+    "anthropic_key_env": "ANTHROPIC_API_KEY",
+    "together_key_env": "TOGETHER_API_KEY"
+  },
+
+  "logging": {
+    "level": "INFO",
+    "file": "logs/autonomous_consciousness.log",
+    "max_file_size_mb": 100,
+    "backup_count": 5
+  }
+}

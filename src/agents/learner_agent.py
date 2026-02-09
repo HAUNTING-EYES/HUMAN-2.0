@@ -3,10 +3,17 @@
 HUMAN 2.0 - Learner Agent
 Learns from external sources (GitHub, web) to acquire new knowledge.
 
+NOW WITH REAL LEARNING:
+- Actually clones repositories
+- Parses real code with AST
+- Extracts working patterns
+- Stores in knowledge network
+
 Responsibilities:
 - Search GitHub for code patterns
-- Drive curiosity-based exploration
-- Integrate external knowledge into knowledge base
+- Clone and analyze repositories
+- Extract real code patterns
+- Integrate into knowledge network
 - Identify knowledge gaps
 - Learn from successful projects
 """
@@ -23,6 +30,19 @@ sys.path.append(str(Path(__file__).parent.parent))
 from agents.base_agent import BaseAgent, AgentStatus
 from core.event_bus import EventBus, Event, EventTypes, EventPriority
 from core.shared_resources import SharedResources, KnowledgeNode
+
+# Import real learning components
+try:
+    from learning.github_learner import GitHubLearner, CodePattern
+    HAS_GITHUB_LEARNER = True
+except ImportError:
+    HAS_GITHUB_LEARNER = False
+
+try:
+    from knowledge.network import KnowledgeNetwork
+    HAS_KNOWLEDGE_NETWORK = True
+except ImportError:
+    HAS_KNOWLEDGE_NETWORK = False
 
 
 @dataclass
@@ -70,10 +90,42 @@ class LearnerAgent(BaseAgent):
         self.config = {
             'max_repos_per_search': 3,
             'max_learning_topics_per_cycle': 2,
-            'min_relevance_score': 0.6
+            'min_relevance_score': 0.6,
+            'use_real_learning': True,  # Use actual GitHub cloning
         }
 
-        self.logger.info(f"LearnerAgent initialized")
+        # Initialize real learning components
+        self.github_learner = None
+        self.knowledge_network = None
+
+        if HAS_GITHUB_LEARNER and self.config['use_real_learning']:
+            try:
+                self.github_learner = GitHubLearner(
+                    temp_dir="temp/repos",
+                    chromadb_client=getattr(self.resources, 'chromadb_client', None)
+                )
+                self.logger.info("Real GitHub learning enabled")
+            except Exception as e:
+                self.logger.warning(f"Failed to init GitHubLearner: {e}")
+
+        if HAS_KNOWLEDGE_NETWORK:
+            try:
+                self.knowledge_network = KnowledgeNetwork(
+                    storage_path="data/knowledge_network.json"
+                )
+                self.logger.info(f"Knowledge network loaded with {len(self.knowledge_network.nodes)} nodes")
+            except Exception as e:
+                self.logger.warning(f"Failed to init KnowledgeNetwork: {e}")
+
+        # Stats
+        self.learning_stats = {
+            'repos_cloned': 0,
+            'patterns_learned': 0,
+            'knowledge_nodes_created': 0,
+        }
+
+        mode = "REAL" if self.github_learner else "BASIC"
+        self.logger.info(f"LearnerAgent initialized in {mode} mode")
 
     def register_event_handlers(self):
         """Register event handlers"""
@@ -180,11 +232,17 @@ class LearnerAgent(BaseAgent):
         """
         Search GitHub for code related to topic.
 
+        NEW: If real learning is enabled, this will:
+        1. Search for repos
+        2. Clone them
+        3. Extract actual code patterns
+        4. Store in knowledge network
+
         Args:
             topic: Topic to search
 
         Returns:
-            List of search results
+            List of search results with real patterns
         """
         self.logger.info(f"Searching GitHub for: {topic}")
 
@@ -206,15 +264,69 @@ class LearnerAgent(BaseAgent):
                 max_repos=self.config.get('max_repos_per_search', 3)
             )
 
-            results = [
-                {
-                    'name': url.split('/')[-1] if url else f'repo-{i}',
-                    'description': f'Repository about {topic}',
-                    'url': url,
-                    'stars': 100  # Placeholder
-                }
-                for i, url in enumerate(repo_urls) if url
-            ]
+            results = []
+
+            # NEW: Use real GitHub learner to clone and extract patterns
+            if self.github_learner and repo_urls:
+                self.logger.info(f"Using REAL learning for {len(repo_urls)} repos")
+
+                for repo_url in repo_urls[:self.config['max_repos_per_search']]:
+                    try:
+                        # Actually clone and learn from repo
+                        learn_result = await self.github_learner.learn_from_repo(
+                            repo_url,
+                            topics=[topic],
+                            max_files=20
+                        )
+
+                        if learn_result.success:
+                            self.learning_stats['repos_cloned'] += 1
+                            self.learning_stats['patterns_learned'] += learn_result.patterns_learned
+
+                            # Add patterns to knowledge network
+                            if self.knowledge_network:
+                                for pattern in learn_result.patterns[:10]:  # Limit
+                                    self.knowledge_network.add_knowledge(
+                                        topic=f"{pattern.pattern_type.value}: {pattern.name}",
+                                        content=pattern.code[:500],  # Limit size
+                                        source="github",
+                                        confidence=0.8,
+                                        importance=0.6,
+                                        tags=[topic] + pattern.tags,
+                                        related_topics=[topic]
+                                    )
+                                    self.learning_stats['knowledge_nodes_created'] += 1
+
+                            results.append({
+                                'name': learn_result.repo_name,
+                                'description': f'Learned {learn_result.patterns_learned} patterns',
+                                'url': repo_url,
+                                'patterns_count': learn_result.patterns_learned,
+                                'files_analyzed': learn_result.files_analyzed,
+                                'real_patterns': [
+                                    {'name': p.name, 'type': p.pattern_type.value}
+                                    for p in learn_result.patterns[:5]
+                                ]
+                            })
+
+                            self.logger.info(
+                                f"Learned {learn_result.patterns_learned} patterns from {learn_result.repo_name}"
+                            )
+
+                    except Exception as e:
+                        self.logger.warning(f"Failed to learn from {repo_url}: {e}")
+
+            # Fallback: basic results without real patterns
+            if not results:
+                results = [
+                    {
+                        'name': url.split('/')[-1] if url else f'repo-{i}',
+                        'description': f'Repository about {topic}',
+                        'url': url,
+                        'stars': 100  # Placeholder
+                    }
+                    for i, url in enumerate(repo_urls) if url
+                ]
 
             return results if results else []
 

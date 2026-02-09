@@ -22,7 +22,14 @@ import sys
 sys.path.append(str(Path(__file__).parent.parent))
 
 from core.event_bus import EventBus, EventTypes, create_event
-from core.shared_resources import SharedResources
+# Lazy import to break circular dependency
+_SharedResources = None
+def get_shared_resources_class():
+    global _SharedResources
+    if _SharedResources is None:
+        from core.shared_resources import SharedResources
+        _SharedResources = SharedResources
+    return _SharedResources
 from consciousness.goal_engine import GoalEngine
 from consciousness.self_monitor import SelfMonitor
 from agents.planner_agent import PlannerAgent
@@ -54,7 +61,7 @@ class AutonomousConsciousness:
 
         # Core systems
         self.event_bus = EventBus()
-        self.resources = SharedResources()
+        self.resources = get_shared_resources_class()()
         self.goal_engine = GoalEngine()
         self.self_monitor = SelfMonitor(self.resources)
 

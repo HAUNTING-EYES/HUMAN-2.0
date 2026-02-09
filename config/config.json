@@ -1,0 +1,15 @@
+{
+    "theme": "light",
+    "max_history": 1000,
+    "auto_save": true,
+    "api_endpoints": {
+        "brainstem": "http://localhost:8000",
+        "cerebellum": "http://localhost:8001",
+        "cortex": "http://localhost:8002",
+        "hippocampus": "http://localhost:8003",
+        "thalamus": "http://localhost:8004"
+    },
+    "emotional_responses": true,
+    "chat_mode": true,
+    "personality": "friendly"
+}
